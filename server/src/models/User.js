@@ -13,6 +13,14 @@ const userSchema = new mongoose.Schema(
 
     lastHistoryId: String, // Gmail history cursor
     lastSyncedAt: Date,
+
+    // 🔥 Chunked sync state
+    syncState: {
+      nextPageToken: { type: String, default: null },  // where to resume next chunk
+      totalSynced:   { type: Number, default: 0 },     // running total synced
+      isSyncing:     { type: Boolean, default: false }, // lock to prevent double sync
+      syncStartedAt: { type: Date, default: null },    // when current sync started (auto-unlock after 10 min)
+    },
   },
   { timestamps: true }
 );

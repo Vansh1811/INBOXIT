@@ -4,7 +4,8 @@ const connection = {
   host: process.env.REDIS_HOST,
   port: Number(process.env.REDIS_PORT),
   password: process.env.REDIS_PASSWORD,
-  tls: {},
+  tls: { rejectUnauthorized: false },
+  maxRetriesPerRequest: null,
 };
 
 const syncQueue = new Queue("gmail-sync", { connection });
@@ -14,8 +15,10 @@ const enqueueSyncJob = async (userId, type = "incremental") => {
     "sync",
     { userId, type },
     {
-      attempts: 3,
-      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: true,
+      removeOnFail: { count: 3 },
+      attempts: 2,
+      backoff: { type: "fixed", delay: 5000 },
     }
   );
   console.log(`Sync job enqueued for user ${userId} [${type}]`);

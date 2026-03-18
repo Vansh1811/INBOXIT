@@ -2,16 +2,26 @@ const mongoose = require("mongoose");
 
 const emailSchema = new mongoose.Schema(
   {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
-    gmailMessageId: { type: String, unique: true },
+    userId: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "User", 
+      required: true,
+      index: true 
+    },
+
+    gmailMessageId: { 
+      type: String, 
+      required: true 
+    },
+
     threadId: String,
 
     from: String,
     to: String,
     subject: String,
     snippet: String,
-    bodyHtml: String,  // capped at 100KB
-    bodyText: String,  // capped at 100KB
+    bodyHtml: String,
+    bodyText: String,
 
     receivedAt: { type: Date, index: true },
 
@@ -28,14 +38,20 @@ const emailSchema = new mongoose.Schema(
     isRead: { type: Boolean, default: false },
     isStarred: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
-    userOverride: { type: Boolean, default: false }, // user manually set category
+    userOverride: { type: Boolean, default: false },
 
-    labels: [String], // raw Gmail labels
+    labels: [String],
   },
   { timestamps: true }
 );
 
-// text index for search (subject + from)
+// ✅ TEXT SEARCH
 emailSchema.index({ subject: "text", from: "text" });
+
+// IMPORTANT: COMPOUND UNIQUE INDEX
+emailSchema.index(
+  { userId: 1, gmailMessageId: 1 },
+  { unique: true }
+);
 
 module.exports = mongoose.model("Email", emailSchema);
