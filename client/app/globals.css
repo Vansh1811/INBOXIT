@@ -1,0 +1,94 @@
+/* ─── FONTS — must be first ──────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700;800;900&family=Figtree:ital,wght@0,300;0,400;0,500;0,600;1,300&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@import "tailwindcss";
+
+/* ─── DESIGN TOKENS ──────────────────────────────────────────────────────── */
+:root {
+  --bg-base:        #050508;
+  --border:         rgba(255,255,255,0.06);
+  --border-hover:   rgba(255,255,255,0.12);
+  --text-primary:   #f0f0f8;
+  --text-secondary: rgba(255,255,255,0.45);
+  --text-muted:     rgba(255,255,255,0.22);
+  --accent:         #2563EB;
+  --accent-cyan:    #06B6D4;
+  --accent-purple:  #8B5CF6;
+}
+
+/* ─── BASE ───────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  font-family: 'Figtree', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body { background-color: var(--bg-base); color: var(--text-primary); }
+
+/* ─── SCROLLBAR ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.13); }
+
+/* ─── KEYFRAMES ──────────────────────────────────────────────────────────── */
+@keyframes aurora1 {
+  0%,100% { transform: translate(0%,0%) scale(1); }
+  33%      { transform: translate(5%,-12%) scale(1.15); }
+  66%      { transform: translate(-6%,6%) scale(0.9); }
+}
+@keyframes aurora2 {
+  0%,100% { transform: translate(0%,0%) scale(1); }
+  33%      { transform: translate(-10%,6%) scale(1.1); }
+  66%      { transform: translate(6%,-10%) scale(1.05); }
+}
+@keyframes aurora3 {
+  0%,100% { transform: translate(0%,0%) scale(1); }
+  50%      { transform: translate(8%,8%) scale(1.2); }
+}
+@keyframes scanline {
+  0%   { transform: translateY(-4px); opacity: 0.04; }
+  50%  { opacity: 0.08; }
+  100% { transform: translateY(100vh); opacity: 0.04; }
+}
+@keyframes glow-breath {
+  0%,100% { opacity:0.5; box-shadow:0 0 6px rgba(96,165,250,0.6); }
+  50%      { opacity:1;   box-shadow:0 0 12px rgba(96,165,250,1); }
+}
+@keyframes spin-slow { to { transform: rotate(360deg); } }
+@keyframes shimmer-bar {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+@keyframes shimmer-sweep {
+  0%   { transform: translateX(-200%); }
+  100% { transform: translateX(300%); }
+}
+@keyframes row-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes detail-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── UTILITY CLASSES ────────────────────────────────────────────────────── */
+.animate-fade-in-up     { animation: fadeInUp     0.35s cubic-bezier(0.16,1,0.3,1) both; }
+.animate-slide-in-right { animation: slideInRight 0.35s cubic-bezier(0.16,1,0.3,1) both; }
+.animate-slide-down     { animation: slideDown    0.3s ease-out both; }
+.animate-spin           { animation: spin-slow    0.8s linear infinite; }
