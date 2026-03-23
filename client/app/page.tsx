@@ -420,7 +420,7 @@ export default function LandingPage() {
 
           {/* CTA row */}
           <div className="a4" style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap", marginBottom: 72 }}>
-            <Link href="http://localhost:5000/auth/google" className="cta-white">
+            <Link href={`${process.env.NEXT_PUBLIC_API_URL}/auth/google`} className="cta-white">
               <GoogleLogo />
               Continue with Google
             </Link>
