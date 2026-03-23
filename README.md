@@ -46,7 +46,7 @@ Built entirely from scratch — no email SDK shortcuts, no pre-built inbox templ
 
 ---
 
-## 🏗️ Architecture
+## 📸 Screenshots  **Dashboard — Smart Folders in action**  ![InboxIt Dashboard - Jobs Folder](https://raw.githubusercontent.com/Vansh1811/INBOXIT/main/H5tRq.jpg)  **Inbox View — Live sync progress**  ![InboxIt Inbox - Live Sync](https://raw.githubusercontent.com/Vansh1811/INBOXIT/main/SsrG4.jpg)  ---  ## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
