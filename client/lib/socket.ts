@@ -6,7 +6,7 @@ let socket: Socket | null = null;
 export const getSocket = (): Socket => {
   if (!socket) {
     const token = Cookies.get("jwt");
-    socket = io("http://localhost:5000", {
+    socket = io(process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000", {
       auth: { token },
       autoConnect: false,
     });
