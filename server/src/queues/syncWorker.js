@@ -17,7 +17,7 @@ const bullConnection = {
 };
 
 const CHUNK_SIZE = 500;
-const BATCH_SIZE = 100;
+const BATCH_SIZE = 10;
 
 const safeEmit = (userId, event, payload) => {
   try {
