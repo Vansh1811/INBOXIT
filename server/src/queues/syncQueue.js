@@ -24,4 +24,19 @@ const enqueueSyncJob = async (userId, type = "incremental") => {
   console.log(`Sync job enqueued for user ${userId} [${type}]`);
 };
 
-module.exports = { syncQueue, enqueueSyncJob };
+// ✅ NEW — starts a repeating incremental sync every 60s for this user
+const enqueuePeriodicSync = async (userId) => {
+  await syncQueue.add(
+    "sync",
+    { userId, type: "incremental" },
+    {
+      repeat: { every: 60_000 },
+      jobId: `poll:${userId}`,   // deduped — only one repeating job per user
+      removeOnComplete: true,
+      removeOnFail: { count: 3 },
+    }
+  );
+  console.log(`Periodic sync started for user ${userId} [every 60s]`);
+};
+
+module.exports = { syncQueue, enqueueSyncJob, enqueuePeriodicSync };

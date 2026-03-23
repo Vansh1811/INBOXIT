@@ -1,44 +1,44 @@
 const express = require("express");
 const { protect } = require("../middleware/authMiddleware");
 const { refreshGmailToken } = require("../middleware/tokenRefreshMiddleware");
-const { enqueueSyncJob } = require("../queues/syncQueue");
+const { enqueueSyncJob } = require("../queues/syncQueue"); 
 const User = require("../models/User");
 
 const router = express.Router();
 
-// Initial sync — called after OAuth or on app open
 router.post("/", protect, refreshGmailToken, async (req, res) => {
   const user = await User.findById(req.user.id);
+
+  // ✅ If already synced before, just do incremental — not full
   const type = user.lastHistoryId ? "incremental" : "full";
+
   await enqueueSyncJob(req.user.id.toString(), type);
+
   res.json({
     message: `Sync job queued (${type})`,
     hasMore: !!user.syncState?.nextPageToken,
     totalSynced: user.syncState?.totalSynced || 0,
-    note: type === "full"
-      ? "First sync — fetching latest 3000 emails"
-      : "Incremental sync — only new/changed emails",
   });
 });
 
-// 🔥 Load next 3000 emails — called when user scrolls / clicks "Load more"
 router.post("/load-more", protect, refreshGmailToken, async (req, res) => {
   const user = await User.findById(req.user.id);
 
-  if (!user.syncState?.nextPageToken) {
-    return res.json({ message: "All emails already synced", hasMore: false });
-  }
+  // 🔴 FIXED: Removed the nextPageToken blocker!
+  // If the token is missing, the worker will self-heal by skipping 
+  // existing emails and grabbing the next fresh batch.
 
   if (user.syncState?.isSyncing) {
     return res.status(429).json({ message: "Sync already in progress, please wait" });
   }
 
-  await enqueueSyncJob(req.user.id.toString(), "full"); // resumes from saved nextPageToken
+  // "full" tells your worker to skip the history API and just fetch chunks
+  await enqueueSyncJob(req.user.id.toString(), "full");
 
   res.json({
-    message: "Loading next chunk...",
+    message: "Deep historical sync enqueued successfully!",
     hasMore: true,
-    totalSynced: user.syncState.totalSynced,
+    totalSynced: user.syncState?.totalSynced || 0,
   });
 });
 

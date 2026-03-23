@@ -15,7 +15,6 @@ const emailSchema = new mongoose.Schema(
     },
 
     threadId: String,
-
     from: String,
     to: String,
     subject: String,
@@ -25,14 +24,11 @@ const emailSchema = new mongoose.Schema(
 
     receivedAt: { type: Date, index: true },
 
-    category: {
-      type: String,
-      enum: [
-        "important", "personal", "newsletter", "promotion",
-        "jobs", "food", "cabs", "finance", "health",
-        "social", "todo", "uncategorized",
-      ],
-      default: "uncategorized",
+    // ✅ NEW (multi-category)
+    categories: {
+      type: [String],
+      default: ["uncategorized"],
+      index: true,
     },
 
     isRead: { type: Boolean, default: false },
@@ -48,10 +44,13 @@ const emailSchema = new mongoose.Schema(
 // ✅ TEXT SEARCH
 emailSchema.index({ subject: "text", from: "text" });
 
-// IMPORTANT: COMPOUND UNIQUE INDEX
+// ✅ UNIQUE per user (VERY IMPORTANT)
 emailSchema.index(
   { userId: 1, gmailMessageId: 1 },
   { unique: true }
 );
+
+// ✅ FAST INBOX QUERIES
+emailSchema.index({ userId: 1, receivedAt: -1 });
 
 module.exports = mongoose.model("Email", emailSchema);

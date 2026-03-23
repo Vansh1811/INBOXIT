@@ -1,0 +1,12 @@
+node_modules
+.env
+*.log
+debug-sync.js
+dropDB.js
+fixSync.js
+flush.js
+nuke-queue.js
+reset-sync.js
+.git
+.gitignore
+README.md

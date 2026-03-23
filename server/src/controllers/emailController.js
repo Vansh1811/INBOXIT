@@ -1,3 +1,4 @@
+const User = require("../models/User");
 const Email = require("../models/Email");
 const { redisClient } = require("../config/redis");
 const { getGmailClient } = require("../utils/gmailClient");
@@ -5,32 +6,71 @@ const { getGmailClient } = require("../utils/gmailClient");
 const getEmails = async (req, res) => {
   try {
     const userId = req.user.id;
-    const folder = req.query.folder || "uncategorized";
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-
-    const cacheKey = `user:${userId}:folder:${folder}:page:${page}`;
-
-    const cached = await redisClient.get(cacheKey);
-    if (cached) {
-      return res.json({ source: "cache", emails: JSON.parse(cached) });
+    const folder = req.query.folder || "inbox"; 
+    const limit = parseInt(req.query.limit) || 50;
+    const search = req.query.search;
+    
+    // 🔴 THE SHIFT: Check for exact offset, fallback to page for safety
+    let skip = 0;
+    if (req.query.offset !== undefined) {
+      skip = parseInt(req.query.offset);
+    } else {
+      const page = parseInt(req.query.page) || 1;
+      skip = (page - 1) * limit;
     }
 
-    const emails = await Email.find({
+    // Cache key now uses 'skip' instead of 'page'
+    const cacheKey = `user:${userId}:folder:${folder}:skip:${skip}`;
+
+    if (!search) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        return res.json({ source: "cache", ...JSON.parse(cached) });
+      }
+    }
+
+    // Base query: Must belong to user and not be in the trash
+    const query = {
       userId,
-      category: folder,
       isDeleted: false,
-    })
-      .sort({ receivedAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .select("from subject snippet receivedAt isRead isStarred category");
+    };
 
-    await redisClient.set(cacheKey, JSON.stringify(emails), "EX", 900);
+    if (folder === "inbox") {
+      query.labels = { $ne: "ARCHIVED" }; 
+    } else {
+      query.$or = [
+        { category: folder.toLowerCase() },
+        { categories: { $in: [folder.toLowerCase()] } }
+      ];
+    }
 
-    res.json({ source: "db", emails });
+    if (search) {
+      query.$or = [
+        { subject: { $regex: search, $options: "i" } },
+        { from: { $regex: search, $options: "i" } },
+        { snippet: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const [emails, totalCount] = await Promise.all([
+      Email.find(query)
+        .sort({ receivedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select("from subject snippet receivedAt isRead isStarred category categories labels")
+        .lean(),
+      Email.countDocuments(query)
+    ]);
+
+    const responseData = { emails, totalCount };
+
+    if (!search) {
+      await redisClient.set(cacheKey, JSON.stringify(responseData), "EX", 900);
+    }
+
+    return res.json({ source: "db", ...responseData });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
 
@@ -77,6 +117,9 @@ const updateEmail = async (req, res) => {
       return res.status(404).json({ message: "Email not found" });
     }
 
+    const keys = await redisClient.keys(`user:${req.user.id}:folder:*`);
+    if (keys.length) await redisClient.del(keys);
+
     return res.json(email);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -99,15 +142,19 @@ const deleteEmail = async (req, res) => {
       return res.status(404).json({ message: "Email not found" });
     }
 
-    // 🔥 Trash in actual Gmail
+    const keys = await redisClient.keys(`user:${req.user.id}:folder:*`);
+    if (keys.length) await redisClient.del(keys);
+
     try {
-      const gmail = await getGmailClient(req.user.id);
+      const user = await User.findById(req.user.id);
+      const gmail = await getGmailClient(user);
       await gmail.users.messages.trash({
         userId: "me",
         id: email.gmailMessageId,
       });
+      console.log("[Gmail] Trashed:", email.gmailMessageId);
     } catch (gmailErr) {
-      console.warn("[Gmail] Trash failed:", gmailErr.message);
+      console.error("[Gmail] Trash failed:", gmailErr.message);
     }
 
     return res.json({ message: "Email deleted" });
@@ -132,18 +179,19 @@ const archiveEmail = async (req, res) => {
       return res.status(404).json({ message: "Email not found" });
     }
 
-    // 🔥 Archive in actual Gmail (remove INBOX label)
+    const keys = await redisClient.keys(`user:${req.user.id}:folder:*`);
+    if (keys.length) await redisClient.del(keys);
+
     try {
-      const gmail = await getGmailClient(req.user.id);
+      const user = await User.findById(req.user.id);
+      const gmail = await getGmailClient(user);
       await gmail.users.messages.modify({
         userId: "me",
         id: email.gmailMessageId,
-        requestBody: {
-          removeLabelIds: ["INBOX"],
-        },
+        requestBody: { removeLabelIds: ["INBOX"] },
       });
     } catch (gmailErr) {
-      console.warn("[Gmail] Archive failed:", gmailErr.message);
+      console.error("[Gmail] Archive failed:", gmailErr.message);
     }
 
     return res.json({ message: "Email archived", email });
