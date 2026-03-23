@@ -812,9 +812,9 @@ export default function LandingPage() {
             See it sorted in under 60 seconds.
           </p>
 
-          <Link href="http://localhost:5000/auth/google" className="cta-blue">
+          <Link href={`${process.env.NEXT_PUBLIC_API_URL}/auth/google`} className="cta-blue">
             <GoogleLogo white />
-            Get Access for Free
+            Get Access
           </Link>
 
           <div style={{
