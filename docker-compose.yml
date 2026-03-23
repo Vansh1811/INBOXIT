@@ -1,12 +1,8 @@
-# No Redis or Mongo here — both are cloud (Upstash + Atlas)
-# This compose file wires together only the two app containers
+version: "3.8"
 
-  # ── Express backend + BullMQ workers ───────────────────────────────────────
 services:
   server:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
+    image: vanssh1811/inboxit-server:latest   # ✅ use pushed image
     container_name: inboxit-server
     restart: unless-stopped
     ports:
@@ -16,21 +12,17 @@ services:
     environment:
       NODE_ENV: production
 
-  # ── Next.js frontend ────────────────────────────────────────────────────────
   client:
-    build:
-      context: ./client     # your client/ folder
-      dockerfile: Dockerfile
-      args:
-        # Pass your public API URL at build time so Next.js can embed it
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    image: vanssh1811/inboxit-client:latest   # ✅ use pushed image
     container_name: inboxit-client
     restart: unless-stopped
     ports:
-      - "3000:3000" # removed env_file since client has no runtime secrets
+      - "3000:3000"
     depends_on:
-      - server                # client starts after server is up
+      - server
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:5000   # important for frontend
 
 networks:
   default:
-    name: inboxit-network
+    name: inboxit-network   # ✅ fixed indentation
