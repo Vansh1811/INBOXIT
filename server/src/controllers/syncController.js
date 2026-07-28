@@ -19,7 +19,7 @@ const syncEmails = async (req, res) => {
   }
 };
 
-// 🔴 THE NEW DEEP SYNC FUNCTION
+
 const loadMoreEmails = async (req, res) => {
   try {
     const userId = req.user.id;

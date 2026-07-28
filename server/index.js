@@ -16,6 +16,7 @@ require("./src/queues/syncWorker");
 const http = require("http");
 const { initSocket } = require("./src/config/socket");
 
+
 const app = express();
 const allowedOrigins = (  /// front end URL(s) from env or default
   process.env.CORS_ORIGIN || process.env.CLIENT_URL || "http://localhost:3000"
