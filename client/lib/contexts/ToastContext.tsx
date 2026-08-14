@@ -10,15 +10,22 @@ import {
 
 type ToastType = "info" | "success" | "error" | "warning";
 
+interface ToastAction {
+  label: string;
+  countdown?: number;
+  onClick: () => void;
+}
+
 interface Toast {
   id: string;
   message: string;
   type: ToastType;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
   toasts: Toast[];
-  addToast: (message: string, type?: ToastType) => void;
+  addToast: (message: string, type?: ToastType, action?: ToastAction) => void;
   removeToast: (id: string) => void;
 }
 
@@ -33,13 +40,13 @@ export function useToast() {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const addToast = useCallback((message: string, type: ToastType = "info") => {
+  const addToast = useCallback((message: string, type: ToastType = "info", action?: ToastAction) => {
     const id = Math.random().toString(36).slice(2, 9);
-    setToasts((prev) => [...prev, { id, message, type }]);
+    setToasts((prev) => [...prev, { id, message, type, action }]);
 
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
+    }, 5000);
   }, []);
 
   const removeToast = useCallback((id: string) => {
