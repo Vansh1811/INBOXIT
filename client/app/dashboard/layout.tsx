@@ -9,78 +9,12 @@ import SyncProgressBar from "@/components/SyncProgressBar";
 import Toast from "@/components/Toast";
 import api from "@/lib/api";
 
-// ─── AURORA BACKGROUND ────────────────────────────────────────────────────────
-// Lives here so it persists through all route changes without remounting
-
-function AuroraBackground() {
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 0, overflow: "hidden", pointerEvents: "none" }}>
-      {/* Blob 1 — Blue, top-left */}
-      <div style={{
-        position: "absolute",
-        width: "70vw", height: "65vh",
-        top: "-20%", left: "-15%",
-        background: "radial-gradient(ellipse, rgba(37,99,235,0.22) 0%, transparent 70%)",
-        filter: "blur(72px)",
-        animation: "aurora1 16s ease-in-out infinite",
-      }} />
-
-      {/* Blob 2 — Purple, bottom-right */}
-      <div style={{
-        position: "absolute",
-        width: "55vw", height: "55vh",
-        bottom: "-20%", right: "-10%",
-        background: "radial-gradient(ellipse, rgba(139,92,246,0.17) 0%, transparent 70%)",
-        filter: "blur(80px)",
-        animation: "aurora2 20s ease-in-out infinite",
-      }} />
-
-      {/* Blob 3 — Cyan, center-right */}
-      <div style={{
-        position: "absolute",
-        width: "40vw", height: "40vh",
-        top: "30%", right: "10%",
-        background: "radial-gradient(ellipse, rgba(6,182,212,0.11) 0%, transparent 70%)",
-        filter: "blur(60px)",
-        animation: "aurora3 24s ease-in-out infinite",
-      }} />
-
-      {/* Dot grid */}
-      <div style={{
-        position: "absolute", inset: 0,
-        backgroundImage: "radial-gradient(rgba(255,255,255,0.1) 1px, transparent 1px)",
-        backgroundSize: "30px 30px",
-        maskImage: "radial-gradient(ellipse 90% 90% at 50% 50%, black 30%, transparent 100%)",
-        WebkitMaskImage: "radial-gradient(ellipse 90% 90% at 50% 50%, black 30%, transparent 100%)",
-      }} />
-
-      {/* Scanline sweep */}
-      <div style={{
-        position: "absolute", left: 0, right: 0, height: 3,
-        background: "linear-gradient(90deg, transparent, rgba(59,130,246,0.18), rgba(6,182,212,0.12), transparent)",
-        animation: "scanline 9s linear infinite",
-      }} />
-
-      {/* SVG grain */}
-      <svg
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.3, mixBlendMode: "overlay" }}
-        aria-hidden="true"
-      >
-        <filter id="db-grain">
-          <feTurbulence type="fractalNoise" baseFrequency="0.82" numOctaves="4" stitchTiles="stitch" />
-        </filter>
-        <rect width="100%" height="100%" filter="url(#db-grain)" opacity="0.45" />
-      </svg>
-    </div>
-  );
-}
-
 // ─── DASHBOARD INNER ─────────────────────────────────────────────────────────
 
 function DashboardInner({ children }: { children: React.ReactNode }) {
   const { socket } = useSocketContext();
   const { addToast } = useToast();
-  const { setSyncState } = useSyncContext();
+  const { setSyncState, addIncomingSync, removeIncomingSync, clearIncomingSyncs } = useSyncContext();
 
   useEffect(() => {
     api.post("/sync").catch(() => {});
@@ -109,9 +43,21 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
   const handleSyncFailed = useCallback(
     (data: { error: string }) => {
       setSyncState((prev) => ({ ...prev, isSyncing: false }));
+      clearIncomingSyncs();
       addToast(`Sync failed: ${data.error}`, "error");
     },
-    [setSyncState, addToast]
+    [setSyncState, clearIncomingSyncs, addToast]
+  );
+
+  const handleSyncIncoming = useCallback(
+    (data: { syncId: string; timestamp: number; userId: string }) => {
+      addIncomingSync(data);
+      // Failsafe: if sync:complete never arrives, remove this placeholder after 10 seconds
+      setTimeout(() => {
+        removeIncomingSync(data.syncId);
+      }, 10000);
+    },
+    [addIncomingSync, removeIncomingSync]
   );
 
   useEffect(() => {
@@ -120,38 +66,30 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
     socket.on("sync:progress", handleSyncProgress);
     socket.on("sync:complete", handleSyncComplete);
     socket.on("sync:failed",   handleSyncFailed);
+    socket.on("sync:incoming", handleSyncIncoming);
     return () => {
       socket.off("sync:started",  handleSyncStarted);
       socket.off("sync:progress", handleSyncProgress);
       socket.off("sync:complete", handleSyncComplete);
       socket.off("sync:failed",   handleSyncFailed);
+      socket.off("sync:incoming", handleSyncIncoming);
     };
-  }, [socket, handleSyncStarted, handleSyncProgress, handleSyncComplete, handleSyncFailed]);
+  }, [socket, handleSyncStarted, handleSyncProgress, handleSyncComplete, handleSyncFailed, handleSyncIncoming]);
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "#050508",
-      display: "flex",
-      flexDirection: "column",
-      fontFamily: "'Figtree', -apple-system, sans-serif",
-      position: "relative",
-    }}>
-      {/* Persistent aurora — z:0 */}
-      <AuroraBackground />
-
+    <div className="min-h-screen bg-[var(--bg-base)] flex flex-col font-sans relative text-[var(--text-primary)]">
       {/* Content — z:1 */}
-      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div className="relative z-10 flex flex-col min-h-screen">
         <SyncProgressBar />
 
-        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        <div className="flex flex-1 overflow-hidden">
           {/* Desktop sidebar */}
-          <div className="hidden md:block" style={{ flexShrink: 0 }}>
+          <div className="hidden md:block shrink-0 h-screen bg-[var(--bg-sidebar)]">
             <Sidebar />
           </div>
 
-          {/* Main */}
-          <main style={{ flex: 1, overflowY: "auto", minWidth: 0 }}>
+          {/* Main (List + Detail) */}
+          <main className="flex-1 overflow-hidden min-w-0 flex">
             {children}
           </main>
         </div>
@@ -169,14 +107,18 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
 
 // ─── EXPORT ──────────────────────────────────────────────────────────────────
 
+import { ActionProvider } from "@/lib/contexts/ActionContext";
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <ToastProvider>
-      <SyncProvider>
-        <SocketProvider>
-          <DashboardInner>{children}</DashboardInner>
-        </SocketProvider>
-      </SyncProvider>
+      <ActionProvider>
+        <SyncProvider>
+          <SocketProvider>
+            <DashboardInner>{children}</DashboardInner>
+          </SocketProvider>
+        </SyncProvider>
+      </ActionProvider>
     </ToastProvider>
   );
 }
