@@ -11,12 +11,10 @@ export default function SyncProgressBar() {
     syncState.total > 0 ? (syncState.progress / syncState.total) * 100 : 15;
 
   return (
-    <div className="fixed top-0 left-0 right-0 z-[100] h-[3px] bg-transparent">
+    <div className="fixed top-0 left-0 right-0 z-[100] h-[2px] bg-zinc-900">
       <div
-        className="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-500 ease-out shadow-[0_0_10px_rgba(59,130,246,0.5)]"
-        style={{
-          width: `${percent}%`,
-        }}
+        className="h-full bg-blue-600 transition-all duration-500 ease-out"
+        style={{ width: `${percent}%` }}
       />
     </div>
   );
