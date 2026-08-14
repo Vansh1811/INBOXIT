@@ -9,8 +9,10 @@ const { connectRedis } = require("./src/config/redis");
 const authRoutes = require("./src/routes/authRoutes");
 const syncRoutes = require("./src/routes/syncRoutes");
 const emailRoutes = require("./src/routes/emailRoutes");
+const webhookRoutes = require("./src/routes/webhookRoutes");
 
 require("./src/queues/syncWorker");
+require("./src/queues/actionWorker");
 
 // NEW: http + socket
 const http = require("http");
@@ -38,6 +40,7 @@ app.use(passport.initialize());
 app.use("/auth", authRoutes);
 app.use("/sync", syncRoutes);
 app.use("/api/emails", emailRoutes);
+app.use("/webhooks", webhookRoutes);
 
 app.get("/", (req, res) => res.json({ message: "InboxIt server running 🚀" }));
 
