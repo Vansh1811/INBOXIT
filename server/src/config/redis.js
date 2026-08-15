@@ -9,7 +9,7 @@ const redisClient = new Redis({
   retryStrategy: (times) => Math.min(times * 500, 5000), // retry with backoff up to 5s
   enableOfflineQueue: true,
   connectTimeout: 10000,
-  keepAlive: 5000,        // 🔥 ping every 5s to keep connection alive
+  keepAlive: 5000,        // 🔥 ping every 5s to keep connection alive 
   reconnectOnError: (err) => {
     return err.message.includes("ECONNRESET") || err.message.includes("ENOTFOUND");
   },

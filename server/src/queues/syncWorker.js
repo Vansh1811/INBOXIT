@@ -2,7 +2,7 @@ const { Worker } = require("bullmq");
 const { redisClient } = require("../config/redis");
 const { getIO } = require("../config/socket");
 const User = require("../models/User");
-const { enqueuePeriodicSync } = require("./syncQueue");
+const { enqueuePeriodicSync, enqueueSyncJob } = require("./syncQueue");
 const { runSync } = require("../services/emailSyncService");
 
 const bullConnection = {
@@ -35,6 +35,13 @@ const worker = new Worker(
     const user = await User.findById(userId);
     if (!user) throw new Error("User not found");
     console.log(`[Worker] ✅ User: ${user.email}`);
+
+    console.log({
+      lastHistoryId: user.lastHistoryId,
+      lastHistoryIdType: typeof user.lastHistoryId,
+      nextPageToken: user.syncState?.nextPageToken,
+      nextPageTokenType: typeof user.syncState?.nextPageToken,
+    });
 
     // 2. Prevent double sync (10-min stuck-lock auto-unlock)
     if (user.syncState?.isSyncing) {
@@ -92,6 +99,11 @@ const worker = new Worker(
       user.lastSyncedAt = new Date();
       await user.save();
       safeEmit(userId, "sync:complete", { totalSynced, hasMore });
+      
+      if (!hasMore) {
+        console.log(`[Worker] 🟢 Sync complete (empty)! Ensuring 60s Live Tracking...`);
+        await enqueuePeriodicSync(userId);
+      }
       return;
     }
 
@@ -115,8 +127,11 @@ const worker = new Worker(
     });
 
     // 5. THE LAZY LOAD HANDOFF
-    if (type === "full" && !hasPendingPages) {
-      console.log(`[Worker] 🟢 Initial chunk synced! Starting 60s Live Tracking for new mail...`);
+    if (hasMore) {
+      console.log(`[Worker] 🟡 More pages remain. Enqueuing next chunk...`);
+      await enqueueSyncJob(userId, type);
+    } else {
+      console.log(`[Worker] 🟢 Sync complete! Ensuring 60s Live Tracking for new mail...`);
       await enqueuePeriodicSync(userId);
     }
   },

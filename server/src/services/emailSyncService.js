@@ -91,7 +91,7 @@ const fetchIncrementalMessageIds = async (gmail, startHistoryId) => {
     const res = await gmail.users.history.list({
       userId: "me",
       startHistoryId,
-      historyTypes: ["messageAdded", "labelAdded", "labelRemoved"],
+      historyTypes: ["messageAdded", "labelAdded", "labelRemoved", "messageDeleted"],
       maxResults: 100,
       ...(pageToken && { pageToken }),
     });
@@ -100,6 +100,7 @@ const fetchIncrementalMessageIds = async (gmail, startHistoryId) => {
       (record.messagesAdded || []).forEach((m) => changedIds.add(m.message.id));
       (record.labelsAdded   || []).forEach((m) => changedIds.add(m.message.id));
       (record.labelsRemoved || []).forEach((m) => changedIds.add(m.message.id));
+      (record.messagesDeleted || []).forEach((m) => changedIds.add(m.message.id));
     }
 
     pageToken = res.data.nextPageToken;
@@ -218,6 +219,7 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
 
   let saved = 0;
   let errors = 0;
+  const deletedIds = [];
 
   for (let i = 0; i < newMessages.length; i += BATCH_SIZE) {
     const batch = newMessages.slice(i, i + BATCH_SIZE);
@@ -229,7 +231,8 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
         } catch (err) {
           errors++;
           if (err?.response?.status === 404) {
-             // deleted between list and get — skip silently
+             // permanently deleted in Gmail - handle gracefully
+             deletedIds.push(id);
           } else {
              console.error(`[EmailSyncService] ❌ msg ${id}:`, err.response?.data?.error?.message || err.message);
           }
@@ -280,9 +283,16 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
     console.log(`[EmailSyncService] ${processed}/${total} (saved=${saved}, errors=${errors})`);
   }
 
+  if (deletedIds.length > 0) {
+    const deleteResult = await Email.deleteMany({ userId, gmailMessageId: { $in: deletedIds } });
+    console.log(`[EmailSyncService] 🗑️ Deleted ${deleteResult.deletedCount} emails from MongoDB (permanently deleted in Gmail)`);
+  }
+
   user.syncState.totalSynced = (user.syncState.totalSynced || 0) + saved;
   user.syncState.nextPageToken = nextPageToken;
-  user.lastHistoryId = await getCurrentHistoryId(gmail);
+  if (syncType === "incremental" || !hasPendingPages) {
+    user.lastHistoryId = await getCurrentHistoryId(gmail);
+  }
 
   return {
     isEmpty: false,

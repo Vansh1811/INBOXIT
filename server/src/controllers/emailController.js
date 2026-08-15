@@ -36,7 +36,7 @@ const getEmails = async (req, res) => {
     };
 
     if (folder === "inbox") {
-      query.labels = { $ne: "ARCHIVED" }; 
+      query.labels = "INBOX"; 
     } else {
       query.$or = [
         { category: folder.toLowerCase() },
@@ -128,36 +128,20 @@ const updateEmail = async (req, res) => {
 
 const deleteEmail = async (req, res) => {
   try {
-    const email = await Email.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        userId: req.user.id,
-        isDeleted: false,
-      },
-      { isDeleted: true },
-      { new: true }
-    );
+    const email = await Email.findOne({
+      _id: req.params.id,
+      userId: req.user.id,
+      isDeleted: false,
+    });
 
     if (!email) {
       return res.status(404).json({ message: "Email not found" });
     }
 
-    const keys = await redisClient.keys(`user:${req.user.id}:folder:*`);
-    if (keys.length) await redisClient.del(keys);
+    const { enqueueActionJob } = require("../queues/actionQueue");
+    await enqueueActionJob(req.user.id, email._id, email.gmailMessageId, "delete");
 
-    try {
-      const user = await User.findById(req.user.id);
-      const gmail = await getGmailClient(user);
-      await gmail.users.messages.trash({
-        userId: "me",
-        id: email.gmailMessageId,
-      });
-      console.log("[Gmail] Trashed:", email.gmailMessageId);
-    } catch (gmailErr) {
-      console.error("[Gmail] Trash failed:", gmailErr.message);
-    }
-
-    return res.json({ message: "Email deleted" });
+    return res.json({ message: "Email deletion queued" });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -165,36 +149,114 @@ const deleteEmail = async (req, res) => {
 
 const archiveEmail = async (req, res) => {
   try {
-    const email = await Email.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        userId: req.user.id,
-        isDeleted: false,
-      },
-      { $addToSet: { labels: "ARCHIVED" } },
-      { new: true }
-    );
+    const email = await Email.findOne({
+      _id: req.params.id,
+      userId: req.user.id,
+      isDeleted: false,
+    });
 
     if (!email) {
       return res.status(404).json({ message: "Email not found" });
     }
 
-    const keys = await redisClient.keys(`user:${req.user.id}:folder:*`);
-    if (keys.length) await redisClient.del(keys);
+    const { enqueueActionJob } = require("../queues/actionQueue");
+    await enqueueActionJob(req.user.id, email._id, email.gmailMessageId, "archive");
 
-    try {
-      const user = await User.findById(req.user.id);
-      const gmail = await getGmailClient(user);
-      await gmail.users.messages.modify({
-        userId: "me",
-        id: email.gmailMessageId,
-        requestBody: { removeLabelIds: ["INBOX"] },
-      });
-    } catch (gmailErr) {
-      console.error("[Gmail] Archive failed:", gmailErr.message);
+    return res.json({ message: "Email archival queued", email });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+const cancelAction = async (req, res) => {
+  try {
+    const jobId = `action:${req.user.id}:${req.params.id}`;
+    
+    const { actionQueue } = require("../queues/actionQueue");
+    const job = await actionQueue.getJob(jobId);
+    
+    if (!job) {
+      return res.status(409).json({ message: "Too late — the action has already completed." });
     }
 
-    return res.json({ message: "Email archived", email });
+    const state = await job.getState();
+    if (state !== 'delayed' && state !== 'waiting') {
+      return res.status(409).json({ message: "Too late — the action has already completed." });
+    }
+
+    await job.remove();
+    console.log(`[Queue] Cancelled job ${jobId}`);
+
+    return res.json({ message: "Action cancelled" });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+const bulkCancelAction = async (req, res) => {
+  try {
+    const { jobId } = req.body;
+    if (!jobId) return res.status(400).json({ message: "jobId required" });
+    
+    const { actionQueue } = require("../queues/actionQueue");
+    const job = await actionQueue.getJob(jobId);
+    
+    if (!job) {
+      return res.status(409).json({ message: "Too late — the action has already completed." });
+    }
+
+    const state = await job.getState();
+    if (state !== 'delayed' && state !== 'waiting') {
+      return res.status(409).json({ message: "Too late — the action has already completed." });
+    }
+
+    await job.remove();
+    console.log(`[Queue] Cancelled job ${jobId}`);
+
+    return res.json({ message: "Bulk action cancelled" });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+const bulkArchiveEmails = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "Invalid ids" });
+
+    const emails = await Email.find({ _id: { $in: ids }, userId: req.user.id, isDeleted: false });
+    if (!emails.length) return res.status(404).json({ message: "No matching emails found" });
+
+    const { enqueueActionJob } = require("../queues/actionQueue");
+    const validIds = emails.map(e => e._id.toString());
+    const validGmailIds = emails.map(e => e.gmailMessageId);
+
+    // Enqueue a single bulk job
+    const jobId = `bulk-${Date.now()}`;
+    await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-archive");
+
+    return res.json({ message: "Bulk archive queued", ids: validIds, jobId: `action:${req.user.id}:${jobId}` });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+const bulkDeleteEmails = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "Invalid ids" });
+
+    const emails = await Email.find({ _id: { $in: ids }, userId: req.user.id, isDeleted: false });
+    if (!emails.length) return res.status(404).json({ message: "No matching emails found" });
+
+    const { enqueueActionJob } = require("../queues/actionQueue");
+    const validIds = emails.map(e => e._id.toString());
+    const validGmailIds = emails.map(e => e.gmailMessageId);
+
+    const jobId = `bulk-${Date.now()}`;
+    await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-delete");
+
+    return res.json({ message: "Bulk delete queued", ids: validIds, jobId: `action:${req.user.id}:${jobId}` });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -206,4 +268,8 @@ module.exports = {
   updateEmail,
   deleteEmail,
   archiveEmail,
+  cancelAction,
+  bulkArchiveEmails,
+  bulkDeleteEmails,
+  bulkCancelAction
 };
