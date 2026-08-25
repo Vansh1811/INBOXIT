@@ -1,15 +1,18 @@
 const Redis = require("ioredis");
 
+// This client serves the CACHE (request path) only. BullMQ uses its own
+// connections with blocking commands and must NOT have a commandTimeout.
 const redisClient = new Redis({
   host: process.env.REDIS_HOST,
   port: Number(process.env.REDIS_PORT),
   password: process.env.REDIS_PASSWORD,
   tls: {},
   maxRetriesPerRequest: null,
+  commandTimeout: 5000, // fail fast instead of hanging requests if Redis dies
   retryStrategy: (times) => Math.min(times * 500, 5000), // retry with backoff up to 5s
   enableOfflineQueue: true,
   connectTimeout: 10000,
-  keepAlive: 5000,        // 🔥 ping every 5s to keep connection alive 
+  keepAlive: 5000,        // 🔥 ping every 5s to keep connection alive
   reconnectOnError: (err) => {
     return err.message.includes("ECONNRESET") || err.message.includes("ENOTFOUND");
   },

@@ -26,6 +26,8 @@ const userSchema = new mongoose.Schema(
       totalSynced:   { type: Number, default: 0 },     // running total synced
       isSyncing:     { type: Boolean, default: false }, // lock to prevent double sync
       syncStartedAt: { type: Date, default: null },    // when current sync started (auto-unlock after 10 min)
+      activeJobId:   { type: String, default: null },  // ID of the worker job holding the lock
+      idlePolls:     { type: Number, default: 0 },     // consecutive empty polls; poller stops at threshold
     },
   },
   { timestamps: true }

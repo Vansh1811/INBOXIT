@@ -2,6 +2,8 @@ const Email = require("../models/Email");
 const CategoryPreference = require("../models/CategoryPreference");
 const { redisClient } = require("../config/redis");
 const { isValidCategory, extractSenderDomain } = require("../services/categories");
+const { scanAndDelete } = require("../utils/cacheBust");
+const { resolveRollbackIds } = require("../utils/actionRollback");
 
 /**
  * FOLDER CONTRACT
@@ -26,10 +28,11 @@ const buildFolderQuery = (folder) => {
   return null;
 };
 
-/** Invalidate all cached folder listings for this user. */
+/** Invalidate all cached folder listings for this user (SCAN — never KEYS). */
 const bustFolderCache = async (userId) => {
-  const keys = await redisClient.keys(`user:${userId}:folder:*`);
-  if (keys.length) await redisClient.del(keys);
+  await scanAndDelete(redisClient, `user:${userId}:folder:*`).catch((e) =>
+    console.error("[bustFolderCache]", e.message)
+  );
 };
 
 const getEmails = async (req, res) => {
@@ -207,14 +210,14 @@ const updateEmail = async (req, res) => {
 
 const deleteEmail = async (req, res) => {
   try {
+    // Get ORIGINAL document by omitting new: true
     const email = await Email.findOneAndUpdate(
       {
         _id: req.params.id,
         userId: req.user.id,
         isDeleted: false,
       },
-      { isDeleted: true }, // IMMEDIATE local persistence…
-      { new: true }
+      { isDeleted: true }
     );
 
     if (!email) {
@@ -223,7 +226,8 @@ const deleteEmail = async (req, res) => {
 
     // …then propagate to Gmail asynchronously.
     const { enqueueActionJob } = require("../queues/actionQueue");
-    await enqueueActionJob(req.user.id, email._id, email.gmailMessageId, "delete");
+    const snapshot = { restoreNotDeletedIds: [email._id.toString()] }; // Since query guarantees isDeleted: false
+    await enqueueActionJob(req.user.id, email._id, email.gmailMessageId, "delete", snapshot);
 
     await bustFolderCache(req.user.id);
 
@@ -239,14 +243,14 @@ const deleteEmail = async (req, res) => {
 
 const archiveEmail = async (req, res) => {
   try {
+    // Get ORIGINAL document by omitting new: true
     const email = await Email.findOneAndUpdate(
       {
         _id: req.params.id,
         userId: req.user.id,
         isDeleted: false,
       },
-      { $pull: { labels: "INBOX" } }, // IMMEDIATE local persistence…
-      { new: true }
+      { $pull: { labels: "INBOX" } }
     );
 
     if (!email) {
@@ -255,7 +259,10 @@ const archiveEmail = async (req, res) => {
 
     // …then propagate to Gmail asynchronously.
     const { enqueueActionJob } = require("../queues/actionQueue");
-    await enqueueActionJob(req.user.id, email._id, email.gmailMessageId, "archive");
+    const snapshot = {
+      restoreInboxIds: email.labels?.includes("INBOX") ? [email._id.toString()] : []
+    };
+    await enqueueActionJob(req.user.id, email._id, email.gmailMessageId, "archive", snapshot);
 
     await bustFolderCache(req.user.id);
 
@@ -273,13 +280,22 @@ const archiveEmail = async (req, res) => {
  * Undo the IMMEDIATE local mutation applied when an action was queued.
  * Without this, a cancelled delete/archive would leave the email hidden
  * locally forever (unchanged messages are never re-synced by Gmail history).
+ * Uses the shared resolver so legacy (Phase 2) job payloads also revert.
  */
-const revertLocalAction = async (userId, action, mongoIds) => {
-  const filter = { _id: { $in: mongoIds }, userId };
-  if (action === "delete") {
-    await Email.updateMany(filter, { isDeleted: false });
-  } else if (action === "archive") {
-    await Email.updateMany(filter, { $addToSet: { labels: "INBOX" } });
+const revertLocalAction = async (userId, action, jobData) => {
+  const { archiveIds, notDeletedIds } = resolveRollbackIds(jobData);
+
+  if (archiveIds.length) {
+    await Email.updateMany(
+      { _id: { $in: archiveIds }, userId },
+      { $addToSet: { labels: "INBOX" } }
+    );
+  }
+  if (notDeletedIds.length) {
+    await Email.updateMany(
+      { _id: { $in: notDeletedIds }, userId },
+      { isDeleted: false }
+    );
   }
 };
 
@@ -302,7 +318,7 @@ const cancelAction = async (req, res) => {
     await job.remove();
 
     // Revert the optimistic local change so the email reappears
-    await revertLocalAction(req.user.id, job.data.action, [req.params.id]);
+    await revertLocalAction(req.user.id, job.data.action, job.data);
     await bustFolderCache(req.user.id);
     console.log(`[Queue] Cancelled job ${jobId}`);
 
@@ -333,11 +349,8 @@ const bulkCancelAction = async (req, res) => {
     await job.remove();
 
     // Revert the optimistic local changes for every email in the bulk action
-    const mongoIds = Array.isArray(job.data.mongoIds) ? job.data.mongoIds : [];
-    if (mongoIds.length) {
-      await revertLocalAction(req.user.id, job.data.action, mongoIds);
-      await bustFolderCache(req.user.id);
-    }
+    await revertLocalAction(req.user.id, job.data.action, job.data);
+    await bustFolderCache(req.user.id);
     console.log(`[Queue] Cancelled job ${jobId}`);
 
     return res.json({ message: "Bulk action cancelled" });
@@ -355,25 +368,29 @@ const bulkArchiveEmails = async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "Invalid ids" });
     if (ids.length > MAX_BULK_IDS) return res.status(400).json({ message: `Too many ids (max ${MAX_BULK_IDS})` });
 
-    // IMMEDIATE local persistence…
-    const result = await Email.updateMany(
-      { _id: { $in: ids }, userId: req.user.id, isDeleted: false },
-      { $pull: { labels: "INBOX" } }
-    );
-    if (!result.matchedCount) return res.status(404).json({ message: "No matching emails found" });
-
     const emails = await Email.find(
       { _id: { $in: ids }, userId: req.user.id, isDeleted: false },
-      { _id: 1, gmailMessageId: 1 }
+      { _id: 1, gmailMessageId: 1, labels: 1 }
     ).lean();
+    if (!emails.length) return res.status(404).json({ message: "No matching emails found" });
+
+    // Capture snapshot of those that actually had INBOX
+    const restoreInboxIds = emails
+      .filter(e => e.labels?.includes("INBOX"))
+      .map(e => e._id.toString());
+
+    // IMMEDIATE local persistence…
+    await Email.updateMany(
+      { _id: { $in: emails.map(e => e._id) } },
+      { $pull: { labels: "INBOX" } }
+    );
 
     // …then propagate to Gmail asynchronously.
     const { enqueueActionJob } = require("../queues/actionQueue");
     const validGmailIds = emails.map(e => e.gmailMessageId);
-    const validMongoIds = emails.map(e => e._id.toString());
-
+    
     const jobId = `bulk-${Date.now()}`;
-    await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-archive", validMongoIds);
+    await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-archive", { restoreInboxIds });
 
     await bustFolderCache(req.user.id);
 
@@ -390,25 +407,27 @@ const bulkDeleteEmails = async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "Invalid ids" });
     if (ids.length > MAX_BULK_IDS) return res.status(400).json({ message: `Too many ids (max ${MAX_BULK_IDS})` });
 
-    // IMMEDIATE local persistence…
-    const result = await Email.updateMany(
-      { _id: { $in: ids }, userId: req.user.id, isDeleted: false },
-      { isDeleted: true }
-    );
-    if (!result.matchedCount) return res.status(404).json({ message: "No matching emails found" });
-
     const emails = await Email.find(
-      { _id: { $in: ids }, userId: req.user.id },
+      { _id: { $in: ids }, userId: req.user.id, isDeleted: false },
       { _id: 1, gmailMessageId: 1 }
     ).lean();
+    if (!emails.length) return res.status(404).json({ message: "No matching emails found" });
+
+    // Since the query guarantees isDeleted: false, all found ids are valid for restore
+    const restoreNotDeletedIds = emails.map(e => e._id.toString());
+
+    // IMMEDIATE local persistence…
+    await Email.updateMany(
+      { _id: { $in: emails.map(e => e._id) } },
+      { isDeleted: true }
+    );
 
     // …then propagate to Gmail asynchronously (TRASH, same as single delete).
     const { enqueueActionJob } = require("../queues/actionQueue");
     const validGmailIds = emails.map(e => e.gmailMessageId);
-    const validMongoIds = emails.map(e => e._id.toString());
-
+    
     const jobId = `bulk-${Date.now()}`;
-    await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-trash", validMongoIds);
+    await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-trash", { restoreNotDeletedIds });
 
     await bustFolderCache(req.user.id);
 

@@ -6,13 +6,14 @@ dotenv.config({ path: path.resolve(__dirname, ".env") });
 const { validateEnv } = require("./src/config/envCheck");
 validateEnv(); // fail fast with a clear message if config is missing
 
+const mongoose = require("mongoose");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
 const passport = require("./src/config/passport");
 const connectDB = require("./src/config/db");
-const { connectRedis } = require("./src/config/redis");
+const { redisClient, connectRedis } = require("./src/config/redis");
 const authRoutes = require("./src/routes/authRoutes");
 const syncRoutes = require("./src/routes/syncRoutes");
 const emailRoutes = require("./src/routes/emailRoutes");
@@ -21,14 +22,13 @@ const webhookRoutes = require("./src/routes/webhookRoutes");
 const { syncQueue } = require("./src/queues/syncQueue");
 const { actionQueue } = require("./src/queues/actionQueue");
 
-// NEW: http + socket
+// http + socket.io
 const http = require("http");
-const { initSocket } = require("./src/config/socket");
-
+const { initSocket, getIO } = require("./src/config/socket");
 
 const app = express();
 
-// Behind reverse proxies (Render/Render-like PaaS, nginx) so rate limiters
+// Behind reverse proxies (Render-like PaaS, nginx) so rate limiters
 // see the real client IP instead of the proxy IP
 app.set("trust proxy", 1);
 
@@ -40,7 +40,7 @@ app.use(
   })
 );
 
-const allowedOrigins = (  /// front end URL(s) from env or default
+const allowedOrigins = (
   process.env.CORS_ORIGIN || process.env.CLIENT_URL || "http://localhost:3000"
 )
   .split(",")
@@ -75,6 +75,26 @@ app.use("/webhooks", webhookRoutes); // webhook has its own stricter limiter ins
 
 app.get("/", (req, res) => res.json({ message: "InboxIt server running 🚀" }));
 
+// Readiness probe: 200 only when both data stores are reachable.
+app.get("/health", async (req, res) => {
+  const mongoOk = mongoose.connection.readyState === 1;
+  let redisOk = false;
+  let timerId;
+  try {
+    redisOk = (await Promise.race([
+      redisClient.ping(),
+      new Promise((_, rej) => {
+        timerId = setTimeout(() => rej(new Error("timeout")), 1500);
+      }),
+    ])) === "PONG";
+  } catch {
+    redisOk = false;
+  } finally {
+    clearTimeout(timerId);
+  }
+  res.status(mongoOk && redisOk ? 200 : 503).json({ status: mongoOk && redisOk ? "ok" : "degraded", mongo: mongoOk, redis: redisOk });
+});
+
 connectDB();
 connectRedis().catch((err) => {
   console.error("Redis connection failed ❌", err.message);
@@ -83,29 +103,60 @@ connectRedis().catch((err) => {
 const PORT = process.env.PORT || 5000;
 
 const httpServer = http.createServer(app);
-initSocket(httpServer, { allowedOrigins });
+const io = initSocket(httpServer, { allowedOrigins });
 
-// Clear stale jobs left in Redis from previous runs so workers
-// only ever process jobs enqueued AFTER this server started
-// (i.e. triggered by OAuth login / sync routes / webhooks)
-const startServer = async () => {
-  try {
-    await Promise.all([
-      syncQueue.obliterate({ force: true }),
-      actionQueue.obliterate({ force: true }),
-    ]);
-    console.log("🧹 Cleared stale queued jobs from Redis");
-  } catch (err) {
-    console.error("⚠️  Failed to clear stale jobs:", err.message);
+// Workers attach during startup; the shutdown hook reads this same array.
+const attachedWorkers = [];
+
+/**
+ * Startup queue maintenance — deliberately NOT obliterate():
+ *
+ * The old behavior wiped ALL queued jobs AND every user's repeatable live-
+ * tracking job on each boot, silently killing 60s polling until users logged
+ * in again, and making multi-instance deployments impossible.
+ *
+ * Jobs are idempotent (upserts everywhere), so letting queued work survive a
+ * restart is safe — interrupted syncs simply resume. We only clear bounded
+ * dead-letter/completed leftovers.
+ */
+const maintainQueuesAtBoot = async () => {
+  for (const [name, q] of [["gmail-sync", syncQueue], ["email-action", actionQueue]]) {
+    for (const type of ["failed", "completed"]) {
+      try {
+        const ids = await q.clean(0, 1000, type);
+        if (ids.length) console.log(`🧹 Cleaned ${ids.length} ${type} job(s) from ${name}`);
+      } catch (err) {
+        console.warn(`⚠️  Could not clean ${type} in ${name}:`, err.message);
+      }
+    }
   }
+};
 
-  // Attach workers ONLY after the queues are clean
-  require("./src/queues/syncWorker");
-  require("./src/queues/actionWorker");
+const startServer = async () => {
+  // Workers attach immediately — any jobs left behind by a crashed instance
+  // are resumed rather than destroyed.
+  const { worker: syncWorker, setEmitter } = require("./src/queues/syncWorker");
+  const { actionWorker } = require("./src/queues/actionWorker");
+  attachedWorkers.push(syncWorker, actionWorker);
+
+  // Route worker emissions through the running socket.io instance
+  setEmitter((userId, event, payload) => {
+    try { getIO().to(userId).emit(event, payload); } catch { /* not ready */ }
+  });
+
+  await maintainQueuesAtBoot();
 
   httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
 };
+
+const { installGracefulShutdown } = require("./src/utils/gracefulShutdown");
+installGracefulShutdown({
+  httpServer,
+  io,
+  workers: attachedWorkers,
+  queues: [syncQueue, actionQueue],
+});
 
 startServer();

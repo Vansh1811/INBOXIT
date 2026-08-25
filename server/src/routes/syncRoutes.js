@@ -21,8 +21,24 @@ const syncLimiter = rateLimit({
 router.post("/", protect, refreshGmailToken, syncLimiter, async (req, res) => {
   const user = await User.findById(req.user.id);
 
+  // Don't pile duplicate jobs into the queue while one is already running —
+  // the worker's lock would skip them anyway, but the queue churn costs Redis ops.
+  if (user.syncState?.isSyncing) {
+    return res.status(429).json({ message: "Sync already in progress, please wait" });
+  }
+  // ✅ Reset idlePolls to ensure the background poller is re-armed even if this sync yields 0 emails.
+  const updatedUser = await User.findByIdAndUpdate(
+    req.user.id,
+    { $set: { "syncState.idlePolls": 0 } },
+    { new: true }
+  );
+
+  if (!updatedUser) {
+    return res.status(404).json({ message: "User not found" });
+  }
+
   // ✅ If already synced before, just do incremental — not full
-  const type = user.lastHistoryId ? "incremental" : "full";
+  const type = updatedUser.lastHistoryId ? "incremental" : "full";
 
   await enqueueSyncJob(req.user.id.toString(), type);
 

@@ -15,10 +15,10 @@ const actionQueue = new Queue("email-action", { connection });
  * @param {string} emailKey       single email id, or a unique key like "bulk-<ts>"
  * @param {string|string[]} gmailMessageIds
  * @param {"delete"|"archive"|"bulk-trash"|"bulk-archive"} action
- * @param {string[]} [mongoIds]   Mongo _id strings (bulk jobs) so a cancelled
- *                                action can revert the immediate local change.
+ * @param {object} [snapshot]     Minimum necessary state to accurately rollback
+ *                                e.g. { restoreInboxIds: [], restoreNotDeletedIds: [] }
  */
-const enqueueActionJob = async (userId, emailKey, gmailMessageIds, action, mongoIds = null) => {
+const enqueueActionJob = async (userId, emailKey, gmailMessageIds, action, snapshot = null) => {
   const jobId = `action:${userId}:${emailKey}`;
   await actionQueue.add(
     "action",
@@ -27,7 +27,7 @@ const enqueueActionJob = async (userId, emailKey, gmailMessageIds, action, mongo
       emailId: emailKey,
       gmailMessageId: gmailMessageIds,
       action,
-      ...(mongoIds ? { mongoIds } : {}),
+      ...(snapshot ? snapshot : {}),
     },
     {
       delay: 5000, // 5 second delay for undo
