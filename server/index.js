@@ -14,6 +14,8 @@ const rateLimit = require("express-rate-limit");
 const passport = require("./src/config/passport");
 const connectDB = require("./src/config/db");
 const { redisClient, connectRedis } = require("./src/config/redis");
+const requestId = require("./src/middleware/requestId");
+const { errorHandler } = require("./src/middleware/errorHandler");
 const authRoutes = require("./src/routes/authRoutes");
 const syncRoutes = require("./src/routes/syncRoutes");
 const emailRoutes = require("./src/routes/emailRoutes");
@@ -25,6 +27,7 @@ const { actionQueue } = require("./src/queues/actionQueue");
 // http + socket.io
 const http = require("http");
 const { initSocket, getIO } = require("./src/config/socket");
+const logger = require("./src/utils/logger").child({ component: "server" });
 
 const app = express();
 
@@ -57,6 +60,9 @@ app.use(
 );
 app.use(express.json({ limit: "256kb" }));
 app.use(passport.initialize());
+
+// Request correlation — must run before routes so every handler has req.log
+app.use(requestId);
 
 // General API abuse guard — generous enough that normal app usage and the
 // dashboard never hit it; exists only to blunt trivial flooding.
@@ -92,12 +98,44 @@ app.get("/health", async (req, res) => {
   } finally {
     clearTimeout(timerId);
   }
-  res.status(mongoOk && redisOk ? 200 : 503).json({ status: mongoOk && redisOk ? "ok" : "degraded", mongo: mongoOk, redis: redisOk });
+  res.status(mongoOk && redisOk ? 200 : 503).json({
+    status: mongoOk && redisOk ? "ok" : "degraded",
+    mongo: mongoOk,
+    redis: redisOk,
+    uptimeSeconds: Math.round(process.uptime()),
+  });
+});
+
+// ── O-M3: queue depth visibility (counts only — no payloads) ────────────────
+app.get("/internal/queues", async (req, res) => {
+  const withTimeout = (p) =>
+    Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 2000)),
+    ]);
+
+  const safeCounts = async (queue) => {
+    try {
+      const c = await withTimeout(queue.getJobCounts());
+      return { waiting: c.waiting || 0, active: c.active || 0, failed: c.failed || 0 };
+    } catch {
+      return null; // Redis unreachable — reported as null, endpoint still 200
+    }
+  };
+
+  const [sync, action] = await Promise.all([
+    safeCounts(syncQueue),
+    safeCounts(actionQueue),
+  ]);
+
+  res.json({
+    queues: { "gmail-sync": sync, "email-action": action },
+  });
 });
 
 connectDB();
 connectRedis().catch((err) => {
-  console.error("Redis connection failed ❌", err.message);
+  logger.error({ err: err.message }, "Redis connection failed");
 });
 
 const PORT = process.env.PORT || 5000;
@@ -121,12 +159,29 @@ const attachedWorkers = [];
  */
 const maintainQueuesAtBoot = async () => {
   for (const [name, q] of [["gmail-sync", syncQueue], ["email-action", actionQueue]]) {
+    // O-M3: preserve evidence before wiping — log what previously failed
+    try {
+      const failedJobs = await q.getFailed(0, 10);
+      for (const j of failedJobs) {
+        logger.warn(
+          {
+            queue: name,
+            jobId: j.id,
+            userId: j.data?.userId,
+            attempts: j.attemptsMade,
+            failedReason: j.failedReason,
+          },
+          "Previously failed job (being cleaned at boot)"
+        );
+      }
+    } catch {}
+
     for (const type of ["failed", "completed"]) {
       try {
         const ids = await q.clean(0, 1000, type);
-        if (ids.length) console.log(`🧹 Cleaned ${ids.length} ${type} job(s) from ${name}`);
+        if (ids.length) logger.info({ queue: name, type, count: ids.length }, "Boot-cleaned jobs");
       } catch (err) {
-        console.warn(`⚠️  Could not clean ${type} in ${name}:`, err.message);
+        logger.warn({ queue: name, type, err: err.message }, "Boot-clean skipped");
       }
     }
   }
@@ -147,7 +202,7 @@ const startServer = async () => {
   await maintainQueuesAtBoot();
 
   httpServer.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    logger.info({ port: PORT }, "Server running");
   });
 };
 
@@ -160,3 +215,7 @@ installGracefulShutdown({
 });
 
 startServer();
+
+// Terminal error handler — MUST be registered after all routes (O-M2):
+// catches unguarded async rejections (e.g. syncRoutes) and any thrown errors.
+app.use(errorHandler);

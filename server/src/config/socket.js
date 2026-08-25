@@ -1,5 +1,6 @@
 // src/config/socket.js
 const { Server } = require("socket.io");
+const logger = require("../utils/logger").child({ component: "socket" });
 const {
   extractTokenFromHandshake,
   verifyAuthToken,
@@ -30,10 +31,10 @@ const initSocket = (httpServer, { allowedOrigins = [] } = {}) => {
   io.on("connection", (socket) => {
     const userId = socket.userId;
     socket.join(userId);
-    console.log(`User ${userId} connected via WebSocket`);
+    logger.info(`User ${userId} connected via WebSocket`);
 
     socket.on("disconnect", () => {
-      console.log(`User ${userId} disconnected`);
+      logger.info(`User ${userId} disconnected`);
     });
   });
 

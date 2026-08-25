@@ -1,4 +1,5 @@
 const express = require("express");
+const logger = require("../utils/logger").child({ component: "webhook" });
 const rateLimit = require("express-rate-limit");
 const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/User");
@@ -39,7 +40,7 @@ async function verifyPubsubOidc(req, res, next) {
   const audience = process.env.PUBSUB_OIDC_AUDIENCE;
   if (!audience) {
     // Fail closed: never process unauthenticated pushes.
-    console.error(
+    logger.error(
       "[Webhook] ❌ PUBSUB_OIDC_AUDIENCE not configured — rejecting push. " +
         "Set it to match your Pub/Sub subscription's OIDC audience."
     );
@@ -58,7 +59,7 @@ async function verifyPubsubOidc(req, res, next) {
     });
     next();
   } catch (err) {
-    console.error("[Webhook] ❌ OIDC verification failed:", err.message);
+    logger.error("[Webhook] ❌ OIDC verification failed:", err.message);
     return res.status(401).send("Unauthorized");
   }
 }
@@ -86,7 +87,7 @@ router.post("/gmail", webhookLimiter, verifyPubsubOidc, async (req, res) => {
     if (!user) {
       // 200 (not 404): unknown addresses must not be enumerable by probing,
       // and non-2xx makes Pub/Sub retry forever for accounts we don't host.
-      console.warn(`[Webhook] Push for unknown account — ignored`);
+      logger.warn(`[Webhook] Push for unknown account — ignored`);
       return res.status(200).send("OK");
     }
 
@@ -108,7 +109,7 @@ router.post("/gmail", webhookLimiter, verifyPubsubOidc, async (req, res) => {
 
     res.status(200).send("OK");
   } catch (error) {
-    console.error("[Webhook] Gmail push error:", error.message);
+    logger.error("[Webhook] Gmail push error:", error.message);
     res.status(500).send("Internal Server Error");
   }
 });

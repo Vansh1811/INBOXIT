@@ -38,13 +38,23 @@ export default function EmailList({ folder }: EmailListProps) {
   const { incomingSyncs, clearIncomingSyncs } = useSyncContext();
   const { addPendingActions, removePendingAction, pendingActions, addPendingAction } = useActionContext();
   const cursor = cursorStack[Math.min(pageIndex, cursorStack.length - 1)] ?? "";
-  const { emails, hasMore, nextCursor, freshTotal, isLoading, mutate } =
+  const { emails, hasMore, nextCursor, freshTotal, isLoading, error, mutate } =
     useEmails(folder, cursor, searchQuery, limit);
 
   // Keep the last known total when a fresh one arrives (first pages only).
   useEffect(() => {
     if (freshTotal !== null) setLastTotal(freshTotal);
   }, [freshTotal]);
+
+  // O-H2: partial ingestion must be visible, not silent.
+  useEffect(() => {
+    if (!socket) return;
+    const onPartial = (data: { errors?: number; message?: string }) => {
+      addToast(data?.message || "Some emails couldn't be loaded.", "warning");
+    };
+    socket.on("sync:partial", onPartial);
+    return () => { socket.off("sync:partial", onPartial); };
+  }, [socket, addToast]);
 
   useEffect(() => {
     setCursorStack([""]);
@@ -361,7 +371,10 @@ export default function EmailList({ folder }: EmailListProps) {
 
       {/* ── ROWS ── */}
       <div className="flex-1 overflow-y-auto">
-        {isLoading && emails.length === 0 ? (
+        {error && emails.length === 0 ? (
+          /* O-H2: a failed load must never read as "caught up" */
+          <EmptyEmailState type="error" onRetry={() => mutate()} />
+        ) : isLoading && emails.length === 0 ? (
           <EmptyEmailState type="loading" />
         ) : emails.length === 0 ? (
           <EmptyEmailState type="empty" folder={folder} iconName={folderCat.icon} />

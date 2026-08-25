@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const logger = require("../utils/logger").child({ component: "token-crypto" });
 
 /**
  * Token encryption-at-rest utility.
@@ -17,7 +18,7 @@ const KEY_HEX = process.env.TOKEN_ENCRYPTION_KEY;
 if (!KEY_HEX || !/^[0-9a-fA-F]{64}$/.test(KEY_HEX)) {
   throw new Error(
     "TOKEN_ENCRYPTION_KEY is missing or invalid. Generate one with:\n" +
-      '  node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"\n' +
+      '  node -e "logger.info(require(\'crypto\').randomBytes(32).toString(\'hex\'))"\n' +
       "and add it to server/.env"
   );
 }
@@ -63,7 +64,7 @@ function decryptToken(stored) {
   } catch {
     // Wrong key or tampered data — fail closed rather than leaking garbage
     // that could be mistaken for a valid credential.
-    console.error("[TokenCrypto] ❌ Failed to decrypt a stored token (wrong key or corrupted data)");
+    logger.error("[TokenCrypto] ❌ Failed to decrypt a stored token (wrong key or corrupted data)");
     return "";
   }
 }

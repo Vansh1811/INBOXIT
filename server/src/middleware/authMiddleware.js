@@ -21,6 +21,8 @@ const protect = async (req, res, next) => {
     if (!user) return res.status(401).json({ message: "User not found" });
 
     req.user = user; // attach full user to request
+    // Correlate every downstream log line with this user (O-M1)
+    if (req.log) req.log = req.log.child({ userId: String(user._id) });
     next();
   } catch (err) {
     return res.status(401).json({ message: "Invalid or expired token" });

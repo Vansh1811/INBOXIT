@@ -1,4 +1,5 @@
 const Redis = require("ioredis");
+const logger = require("../utils/logger").child({ component: "redis" });
 
 // This client serves the CACHE (request path) only. BullMQ uses its own
 // connections with blocking commands and must NOT have a commandTimeout.
@@ -18,8 +19,8 @@ const redisClient = new Redis({
   },
 });
 
-redisClient.on("error", (err) => console.error("Redis error ❌", err));
-redisClient.on("connect", () => console.log("Redis connected ✅"));
+redisClient.on("error", (err) => logger.error("Redis error ❌", err));
+redisClient.on("connect", () => logger.info("Redis connected ✅"));
 
 const connectRedis = async () => {
   // ioredis auto-connects, so just wait for ready event

@@ -1,5 +1,7 @@
 const axios = require("axios");
+const logger = require("../utils/logger").child({ component: "token-refresh" });
 const User = require("../models/User");
+const { classifyGmailError } = require("../utils/gmailErrors");
 
 const refreshGmailToken = async (req, res, next) => {
   try {
@@ -31,14 +33,23 @@ const refreshGmailToken = async (req, res, next) => {
     await user.save();
 
     req.user = user; // updated tokens available downstream
-    console.log("Gmail token refreshed ✅");
+    logger.info("Gmail token refreshed ✅");
     next();
-
   } catch (err) {
-    console.error("Token refresh failed ❌", err.message);
-    // refresh token revoked → force re-login
-    return res.status(401).json({
-      message: "Gmail access revoked. Please login again.",
+    // O-H3: distinguish genuine revocation from transient failures.
+    const kind = classifyGmailError(err);
+    logger.error(`Gmail token refresh failed (${kind}):`, err.message);
+
+    if (kind === "revoked") {
+      // refresh token revoked → force re-login
+      return res.status(401).json({
+        message: "Gmail access revoked. Please login again.",
+      });
+    }
+
+    // Transient Google/network failure → retryable, NOT a logout.
+    return res.status(503).json({
+      message: "Gmail is temporarily unavailable. Please try again shortly.",
     });
   }
 };

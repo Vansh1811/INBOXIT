@@ -46,4 +46,46 @@ function isDeleteFamily(action) {
   );
 }
 
-module.exports = { resolveRollbackIds };
+/**
+ * Restrict a rollback payload to ONLY the entries that failed on Gmail's side.
+ *
+ * Used when a BULK action partially succeeds: successful ids must NOT be
+ * reverted (Gmail already applied them), while failed ids must be, so local
+ * state never permanently diverges from Gmail.
+ *
+ * Supports both payload conventions:
+ *   - Phase 3+ snapshots: filters restoreInboxIds / restoreNotDeletedIds
+ *   - Legacy Phase 2:     filters mongoIds
+ *
+ * @returns {object|null} restricted payload with arrays filtered to the failed
+ *                        subset (possibly empty ⇒ reconcile is a no-op), or
+ *                        null when zero failures / no known convention.
+ */
+function restrictRollbackToFailed(data, failedMongoIds) {
+  const set = new Set(failedMongoIds || []);
+  if (set.size === 0) return null;
+
+  const hasSnapshot =
+    Array.isArray(data.restoreInboxIds) || Array.isArray(data.restoreNotDeletedIds);
+
+  if (hasSnapshot) {
+    return {
+      userId: data.userId,
+      action: data.action,
+      restoreInboxIds: (data.restoreInboxIds || []).filter((id) => set.has(id)),
+      restoreNotDeletedIds: (data.restoreNotDeletedIds || []).filter((id) => set.has(id)),
+    };
+  }
+
+  if (Array.isArray(data.mongoIds)) {
+    return {
+      userId: data.userId,
+      action: data.action,
+      mongoIds: data.mongoIds.filter((id) => set.has(id)),
+    };
+  }
+
+  return null;
+}
+
+module.exports = { resolveRollbackIds, restrictRollbackToFailed };

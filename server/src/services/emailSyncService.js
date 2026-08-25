@@ -2,9 +2,13 @@ const { getGmailClient } = require("../utils/gmailClient");
 const { extractBody, extractHeaders } = require("../utils/mimeParser");
 const { classify, fromGmailTabs } = require("./classifier");
 const { UNCATEGORIZED } = require("./categories");
+const { shouldAdvanceCursor } = require("../utils/syncPolicy");
+const { isRevokedGmailError } = require("../utils/gmailErrors");
 const Email = require("../models/Email");
+const User = require("../models/User");
 const CategoryPreference = require("../models/CategoryPreference");
 const axios = require("axios");
+const logger = require("../utils/logger").child({ component: "email-sync" });
 
 const CHUNK_SIZE = 500;
 const BATCH_SIZE = 10;
@@ -137,18 +141,32 @@ const refreshTokenIfNeeded = async (user) => {
 
   if (tokenExpiry > Date.now() + buffer) return;
 
-  console.log(`[EmailSyncService] ⚠️  Token expiring — refreshing...`);
-  const { data } = await axios.post("https://oauth2.googleapis.com/token", {
-    client_id:     process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET,
-    refresh_token: user.refreshToken,
-    grant_type:    "refresh_token",
-  });
+  logger.info(`[EmailSyncService] ⚠️  Token expiring — refreshing...`);
+  try {
+    const { data } = await axios.post("https://oauth2.googleapis.com/token", {
+      client_id:     process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      refresh_token: user.refreshToken,
+      grant_type:    "refresh_token",
+    });
 
-  user.accessToken = data.access_token;
-  user.tokenExpiry = new Date(Date.now() + data.expires_in * 1000);
-  await user.save();
-  console.log(`[EmailSyncService] ✅ Token refreshed`);
+    user.accessToken = data.access_token;
+    user.tokenExpiry = new Date(Date.now() + data.expires_in * 1000);
+    await user.save();
+    logger.info(`[EmailSyncService] ✅ Token refreshed`);
+  } catch (err) {
+    // O-H3: only GENUINE revocation may be classified as a token error.
+    // Transient Google/network failures (and Mongo write conflicts) must
+    // keep normal retry semantics — the poller stays armed.
+    if (!isRevokedGmailError(err)) throw err;
+
+    const customError = new Error(
+      "Gmail credentials were revoked. User needs to re-login."
+    );
+    customError.originalError = err;
+    customError.isTokenError = true;
+    throw customError;
+  }
 };
 
 const getCurrentHistoryId = async (gmail) => {
@@ -157,17 +175,44 @@ const getCurrentHistoryId = async (gmail) => {
 };
 
 /**
+ * Persist run results computed on the in-memory user document.
+ *
+ * Ownership-guarded: only the job that currently holds this user's sync lock
+ * may write. Without this, cursor/resume/metric mutations would never reach
+ * MongoDB (the worker's release update deliberately touches only lock and
+ * freshness fields).
+ *
+ * Callers without a jobId (debug scripts) keep their in-memory-only behavior.
+ */
+async function persistRunResults(userId, jobId, fields) {
+  if (!jobId) return;
+  await User.updateOne(
+    { _id: userId, "syncState.activeJobId": jobId },
+    { $set: fields }
+  );
+}
+
+/**
  * Public API
  */
-async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
+async function runSync({ user, syncType, jobId, onProgress }) {
   const userId = user._id;
 
   try {
     await refreshTokenIfNeeded(user);
   } catch (err) {
-    const customError = new Error("Token refresh failed. User needs to re-login.");
-    customError.originalError = err;
-    customError.isTokenError = true;
+    // O-H3: only genuine revocation is flagged as a token error (which stops
+    // live tracking). Transient/network failures propagate untouched so the
+    // job retries normally and the poller stays armed.
+    if (!err.isTokenError && !isRevokedGmailError(err)) throw err;
+
+    const customError = err.isTokenError
+      ? err
+      : new Error("Gmail credentials were revoked. User needs to re-login.");
+    if (!err.isTokenError) {
+      customError.originalError = err;
+      customError.isTokenError = true;
+    }
     throw customError;
   }
 
@@ -180,39 +225,43 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
   const hasPendingPages = !!user.syncState?.nextPageToken;
 
   if (syncType === "incremental" && user.lastHistoryId) {
-    console.log(`[EmailSyncService] Incremental sync (historyId=${user.lastHistoryId})...`);
+    logger.info(`[EmailSyncService] Incremental sync (historyId=${user.lastHistoryId})...`);
     let incrementalMessages = [];
 
     try {
       incrementalMessages = await fetchIncrementalMessageIds(gmail, user.lastHistoryId);
-      console.log(`[EmailSyncService] Incremental returned ${incrementalMessages.length} message(s)`);
+      logger.info(`[EmailSyncService] Incremental returned ${incrementalMessages.length} message(s)`);
     } catch (incErr) {
       const errMsg = incErr.response?.data?.error?.message || incErr.message;
-      console.log(`[EmailSyncService] ⚠️  Incremental failed (${errMsg}) — falling back to chunk`);
+      logger.info(`[EmailSyncService] ⚠️  Incremental failed (${errMsg}) — falling back to chunk`);
       didFallback = true;
     }
 
     if (!didFallback) {
       messages = incrementalMessages;
     } else {
-      console.log(`[EmailSyncService] Fallback chunk (resumeToken=${nextPageToken ? "saved" : "fresh"})...`);
+      logger.info(`[EmailSyncService] Fallback chunk (resumeToken=${nextPageToken ? "saved" : "fresh"})...`);
       const result = await fetchMessageChunk(gmail, nextPageToken);
       messages = result.messages;
       nextPageToken = result.nextPageToken;
     }
   } else {
-    console.log(`[EmailSyncService] Chunk sync (token=${nextPageToken ? "resume" : "fresh"})...`);
+    logger.info(`[EmailSyncService] Chunk sync (token=${nextPageToken ? "resume" : "fresh"})...`);
     const result = await fetchMessageChunk(gmail, nextPageToken);
     messages = result.messages;
     nextPageToken = result.nextPageToken;
   }
 
-  console.log(`[EmailSyncService] ${messages.length} messages to process`);
+  logger.info(`[EmailSyncService] ${messages.length} messages to process`);
 
   if (messages.length === 0) {
-    console.log(`[EmailSyncService] ✅ Nothing to sync`);
+    logger.info(`[EmailSyncService] ✅ Nothing to sync`);
     user.lastHistoryId = await getCurrentHistoryId(gmail);
-    // The worker will save the user and handle lock release
+    user.syncState.erroredRuns = 0; // an empty poll is a successful poll
+    await persistRunResults(userId, jobId, {
+      lastHistoryId: user.lastHistoryId,
+      "syncState.erroredRuns": 0,
+    });
     return {
       isEmpty: true,
       hasMore: !!nextPageToken,
@@ -229,7 +278,7 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
   const skipped = messages.length - newMessages.length;
   const total = newMessages.length;
 
-  console.log(`[EmailSyncService] Skipping ${skipped} already-synced, processing ${total} new`);
+  logger.info(`[EmailSyncService] Skipping ${skipped} already-synced, processing ${total} new`);
 
   // Learned preferences + user-protected categories are loaded ONCE per run
   const [userPrefs, overriddenIds] = await Promise.all([
@@ -254,7 +303,7 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
              // permanently deleted in Gmail - handle gracefully
              deletedIds.push(id);
           } else {
-             console.error(`[EmailSyncService] ❌ msg ${id}:`, err.response?.data?.error?.message || err.message);
+             logger.error(`[EmailSyncService] ❌ msg ${id}:`, err.response?.data?.error?.message || err.message);
           }
           return null; // Partial failure
         }
@@ -274,51 +323,60 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
 
       await Email.bulkWrite(bulkOps);
       saved += validEmails.length;
-
-      // Only fetch the full documents if we need to emit socket events for an incremental sync
-      if (syncType === "incremental" && !didFallback && !hasPendingPages && onEmailProcessed) {
-        const insertedEmails = await Email.find(
-          { userId, gmailMessageId: { $in: validEmails.map((e) => e.gmailMessageId) } }
-        ).lean();
-
-        insertedEmails.forEach((email) => {
-          onEmailProcessed({
-            id: email._id,
-            gmailMessageId: email.gmailMessageId,
-            from: email.from,
-            subject: email.subject,
-            category: email.category,
-            receivedAt: email.receivedAt,
-          });
-        });
-      }
     }
 
     const processed = Math.min(i + BATCH_SIZE, newMessages.length);
-    
+
     if (onProgress) {
       await onProgress(processed, total, saved, errors);
     }
-    
-    console.log(`[EmailSyncService] ${processed}/${total} (saved=${saved}, errors=${errors})`);
+
+    logger.debug({ processed, total, saved, errors }, "Batch processed");
   }
 
   if (deletedIds.length > 0) {
     const deleteResult = await Email.deleteMany({ userId, gmailMessageId: { $in: deletedIds } });
-    console.log(`[EmailSyncService] 🗑️ Deleted ${deleteResult.deletedCount} emails from MongoDB (permanently deleted in Gmail)`);
+    logger.info(`[EmailSyncService] 🗑️ Deleted ${deleteResult.deletedCount} emails from MongoDB (permanently deleted in Gmail)`);
   }
 
   user.syncState.totalSynced = (user.syncState.totalSynced || 0) + saved;
-  user.syncState.nextPageToken = nextPageToken;
-  if (syncType === "incremental" || !hasPendingPages) {
-    user.lastHistoryId = await getCurrentHistoryId(gmail);
+
+  // ── O-H1: never advance Gmail state past partially failed ingestion ────
+  // A run with fetch errors retains the previous history cursor AND resume
+  // token so the failed window is re-processed next poll (upserts make
+  // redelivery harmless). After POISON_WINDOW_RUNS consecutive errored runs
+  // we advance anyway and surface the loss via `poisonWindow`.
+  const { advance, gaveUp, newStreak } = shouldAdvanceCursor({
+    errors,
+    previousErroredRuns: user.syncState.erroredRuns || 0,
+  });
+  user.syncState.erroredRuns = newStreak;
+
+  if (advance) {
+    user.syncState.nextPageToken = nextPageToken;
+    if (syncType === "incremental" || !hasPendingPages) {
+      user.lastHistoryId = await getCurrentHistoryId(gmail);
+    }
   }
+  // The in-flight chunk chain is unaffected either way: it follows the
+  // RETURNED nextPageToken; only the persisted resume state is gated.
+
+  // Persist run results atomically — guarded on lock ownership so a job
+  // that lost its lock to stale-takeover cannot clobber the newer run.
+  await persistRunResults(userId, jobId, {
+    "syncState.totalSynced": user.syncState.totalSynced,
+    "syncState.nextPageToken": user.syncState.nextPageToken ?? null,
+    "syncState.erroredRuns": user.syncState.erroredRuns,
+    lastHistoryId: user.lastHistoryId ?? null,
+  });
 
   return {
     isEmpty: false,
     saved,
     skipped,
     errors,
+    partial: errors > 0,
+    poisonWindow: gaveUp && errors > 0,
     hasMore: !!nextPageToken,
     hasPendingPages,
     totalSynced: user.syncState.totalSynced

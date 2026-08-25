@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const logger = require("../utils/logger").child({ component: "shutdown" });
 const { redisClient } = require("../config/redis");
 
 /**
@@ -25,7 +26,7 @@ function withTimeout(promise, ms, label) {
     promise,
     new Promise((resolve) =>
       setTimeout(() => {
-        console.warn(`⏱️  ${label} did not finish in ${ms}ms — continuing`);
+        logger.warn(`⏱️  ${label} did not finish in ${ms}ms — continuing`);
         resolve();
       }, ms)
     ),
@@ -39,9 +40,9 @@ function installGracefulShutdown({ httpServer, io, workers = [], queues = [] }) 
     if (shuttingDown) return; // ignore repeated signals
     shuttingDown = true;
 
-    console.log(`\n🛑 ${signal} received — shutting down gracefully…`);
+    logger.info(`\n🛑 ${signal} received — shutting down gracefully…`);
     const hardExit = setTimeout(() => {
-      console.error("⚠️  Graceful shutdown timed out — forcing exit");
+      logger.error("⚠️  Graceful shutdown timed out — forcing exit");
       process.exit(1);
     }, SHUTDOWN_TIMEOUT_MS).unref();
 
@@ -68,10 +69,10 @@ function installGracefulShutdown({ httpServer, io, workers = [], queues = [] }) 
       }
 
       clearTimeout(hardExit);
-      console.log("✅ Shutdown complete");
+      logger.info("✅ Shutdown complete");
       process.exit(0);
     } catch (err) {
-      console.error("❌ Error during shutdown:", err.message);
+      logger.error("❌ Error during shutdown:", err.message);
       process.exit(1);
     }
   };
@@ -81,11 +82,11 @@ function installGracefulShutdown({ httpServer, io, workers = [], queues = [] }) 
 
   process.on("unhandledRejection", (reason) => {
     // Deliberately just logging. Many libraries still throw unhandled rejections for minor network flakes.
-    console.error("⚠️ [unhandledRejection] Not crashing process, but tracking:", reason instanceof Error ? reason.stack : reason);
+    logger.error("⚠️ [unhandledRejection] Not crashing process, but tracking:", reason instanceof Error ? reason.stack : reason);
   });
   
   process.on("uncaughtException", (err) => {
-    console.error("🔥 [uncaughtException] Process state corrupted, exiting reliably.", err.stack || err.message);
+    logger.error("🔥 [uncaughtException] Process state corrupted, exiting reliably.", err.stack || err.message);
     // Do not attempt long graceful worker shutdown (which could hang or fail cascadingly).
     // Attempt minimal bounded cleanup of critical resources.
     try {
@@ -95,7 +96,7 @@ function installGracefulShutdown({ httpServer, io, workers = [], queues = [] }) 
         mongoose.connection.close(false); // async fire-and-forget
       }
     } catch (e) {
-      console.error("Error during minimal uncaughtException cleanup:", e.message);
+      logger.error("Error during minimal uncaughtException cleanup:", e.message);
     }
     
     setTimeout(() => process.exit(1), 1000).unref();

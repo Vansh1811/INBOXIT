@@ -1,4 +1,5 @@
 const { Queue } = require("bullmq");
+const logger = require("../utils/logger").child({ component: "action-queue" });
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -38,7 +39,7 @@ const enqueueActionJob = async (userId, emailKey, gmailMessageIds, action, snaps
       backoff: { type: "fixed", delay: 5000 },
     }
   );
-  console.log(`Action job enqueued for ${emailKey} [${action}] (5s delay)`);
+  logger.info(`Action job enqueued for ${emailKey} [${action}] (5s delay)`);
 };
 
 module.exports = { actionQueue, enqueueActionJob };

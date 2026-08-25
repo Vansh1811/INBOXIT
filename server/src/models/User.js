@@ -28,6 +28,7 @@ const userSchema = new mongoose.Schema(
       syncStartedAt: { type: Date, default: null },    // when current sync started (auto-unlock after 10 min)
       activeJobId:   { type: String, default: null },  // ID of the worker job holding the lock
       idlePolls:     { type: Number, default: 0 },     // consecutive empty polls; poller stops at threshold
+      erroredRuns:   { type: Number, default: 0 },     // consecutive syncs with fetch errors; cursor retained while under poison cap
     },
   },
   { timestamps: true }

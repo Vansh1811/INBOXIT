@@ -9,6 +9,7 @@ const {
 } = require("./syncQueue");
 const { scanAndDelete } = require("../utils/cacheBust");
 const { runSync } = require("../services/emailSyncService");
+const logger = require("../utils/logger").child({ component: "sync-worker" });
 
 const bullConnection = {
   host: process.env.REDIS_HOST,
@@ -33,7 +34,7 @@ const worker = new Worker(
   async (job) => {
     const startTime = Date.now();
     const { userId, type } = job.data;
-    console.log(`[Worker] 🟡 Job — userId=${userId}, type=${type}, attempt=${job.attemptsMade + 1}`);
+    logger.info(`[Worker] 🟡 Job — userId=${userId}, type=${type}, attempt=${job.attemptsMade + 1}`);
 
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
 
@@ -60,7 +61,7 @@ const worker = new Worker(
       const existingUser = await User.findById(userId).select("syncState");
       if (!existingUser) throw new Error("User not found");
       
-      console.log(`[Worker] ⚠️  Already syncing (started ${existingUser.syncState?.syncStartedAt}), skipping`);
+      logger.info(`[Worker] ⚠️  Already syncing (started ${existingUser.syncState?.syncStartedAt}), skipping`);
       return { skipped: true };
     }
 
@@ -68,19 +69,17 @@ const worker = new Worker(
 
     let result;
     try {
-      // 3. Delegate to domain service
+      // 3. Delegate to domain service (jobId ⇒ ownership-guarded persistence)
       result = await runSync({
         user,
         syncType: type,
+        jobId: job.id,
         onProgress: async (processed, total, saved, errors) => {
           safeEmit(userId, "sync:progress", { saved, total });
           if (processed % 500 === 0 || processed === total) {
             await job.updateProgress(processed);
           }
         },
-        onEmailProcessed: (email) => {
-          safeEmit(userId, "email:new", email);
-        }
       });
     } catch (err) {
       // Release lock on error — OWNERSHIP-GUARDED: this job may only clear
@@ -107,12 +106,12 @@ const worker = new Worker(
         // Revoked/expired refresh token: polling would hammer Google with 401s
         // forever. Stop live tracking — the next login re-arms it.
         await stopPeriodicSync(userId).catch(() => {});
-        console.error(`[Worker] ❌ Token invalid for ${userId} — live tracking stopped until re-login:`, safeDetail(err.originalError));
+        logger.error(`[Worker] ❌ Token invalid for ${userId} — live tracking stopped until re-login:`, safeDetail(err.originalError));
         safeEmit(userId, "sync:failed", { error: "Gmail access expired — please log in again." });
         throw err;
       }
 
-      console.error(`[Worker] ❌ Sync failed:`, safeDetail(err));
+      logger.error(`[Worker] ❌ Sync failed:`, safeDetail(err));
       safeEmit(userId, "sync:failed", { error: err.message });
       throw err;
     }
@@ -150,7 +149,7 @@ const worker = new Worker(
       if (!hasMore && !hasPendingPages) {
         if (idlePolls >= IDLE_STOP_POLLS) {
           await stopPeriodicSync(userId);
-          console.log(`[Worker] 💤 ${idlePolls} consecutive empty polls — live tracking stopped for user ${userId}`);
+          logger.info(`[Worker] 💤 ${idlePolls} consecutive empty polls — live tracking stopped for user ${userId}`);
           return;
         }
         await enqueuePeriodicSync(userId);
@@ -177,23 +176,34 @@ const worker = new Worker(
 
     // 4. Bust Redis cache (SCAN-based — never KEYS)
     const bustedKeys = await scanAndDelete(redisClient, `user:${userId}:*`).catch((e) => {
-      console.error(`[Worker] Cache bust failed:`, e.message);
+      logger.error(`[Worker] Cache bust failed:`, e.message);
       return 0;
     });
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(
-      `[Worker] ✅ Done in ${elapsed}s — saved=${saved}, skipped=${skipped}, errors=${errors}, hasMore=${hasMore}, cacheBusted=${bustedKeys}`
+    logger.info(
+      `[Worker] ✅ Done in ${elapsed}s — saved=${saved}, skipped=${skipped}, errors=${errors}, hasMore=${hasMore}, cacheBusted=${bustedKeys}${errors > 0 ? `, cursorRetained=${!result.poisonWindow}` : ""}`
     );
 
     safeEmit(userId, "sync:complete", { totalSynced, hasMore });
 
+    // O-M5/O-H1: surface partial ingestion instead of silently swallowing it
+    if (errors > 0) {
+      safeEmit(userId, "sync:partial", {
+        errors,
+        poisonWindow: result.poisonWindow === true,
+        message: result.poisonWindow === true
+          ? `${errors} email(s) could not be loaded after repeated attempts.`
+          : `${errors} email(s) could not be loaded — will retry automatically.`,
+      });
+    }
+
     // 5. THE LAZY LOAD HANDOFF
     if (hasMore || hasPendingPages) {
-      console.log(`[Worker] 🟡 More pages remain. Enqueuing next chunk...`);
+      logger.info(`[Worker] 🟡 More pages remain. Enqueuing next chunk...`);
       await enqueueSyncJob(userId, hasPendingPages ? "full" : type);
     } else {
-      console.log(`[Worker] 🟢 Sync complete! Ensuring live tracking...`);
+      logger.info(`[Worker] 🟢 Sync complete! Ensuring live tracking...`);
       await enqueuePeriodicSync(userId);
     }
   },
@@ -211,7 +221,7 @@ worker.on("stalled", async (jobId) => {
   try {
     const job = await require("./syncQueue").syncQueue.getJob(jobId);
     const userId = job?.data?.userId;
-    console.warn(`[Worker] ⚠️ Job ${jobId} stalled${userId ? ` (user ${userId})` : ""}`);
+    logger.warn(`[Worker] ⚠️ Job ${jobId} stalled${userId ? ` (user ${userId})` : ""}`);
     if (!userId) return;
 
     const updated = await User.findOneAndUpdate(
@@ -229,21 +239,21 @@ worker.on("stalled", async (jobId) => {
     );
 
     if (updated) {
-      console.log(`[Worker] 🔓 Released sync lock for stalled job of user ${userId}`);
+      logger.info(`[Worker] 🔓 Released sync lock for stalled job of user ${userId}`);
     }
 
   } catch (err) {
-    console.error("[Worker] stalled handler error:", err.message);
+    logger.error("[Worker] stalled handler error:", err.message);
   }
 });
 
 worker.on("failed", (job, err) =>
-  console.error(
+  logger.error(
     `[Worker] ❌ FAILED userId=${job?.data?.userId} attempt=${job?.attemptsMade}/${job?.opts?.attempts}:`,
     err.message
   )
 );
-worker.on("completed", (job) => console.log(`[Worker] ✅ Done userId=${job?.data?.userId}`));
-worker.on("error", (err) => console.error(`[Worker] ❌ Worker error:`, err.message));
+worker.on("completed", (job) => logger.info(`[Worker] ✅ Done userId=${job?.data?.userId}`));
+worker.on("error", (err) => logger.error(`[Worker] ❌ Worker error:`, err.message));
 
 module.exports = { worker, setEmitter };

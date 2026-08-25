@@ -5,6 +5,7 @@ const { isValidCategory, extractSenderDomain } = require("../services/categories
 const { scanAndDelete } = require("../utils/cacheBust");
 const { resolveRollbackIds } = require("../utils/actionRollback");
 const { encodeCursor, decodeCursor, keysetBoundary } = require("../utils/cursor");
+const logger = require("../utils/logger").child({ component: "email-controller" });
 
 /**
  * FOLDER CONTRACT
@@ -35,7 +36,7 @@ const LIST_PROJECTION = "from subject snippet receivedAt isRead isStarred catego
 /** Invalidate all cached folder listings for this user (SCAN — never KEYS). */
 const bustFolderCache = async (userId) => {
   await scanAndDelete(redisClient, `user:${userId}:folder:*`).catch((e) =>
-    console.error("[bustFolderCache]", e.message)
+    logger.warn({ userId, err: e.message }, "Folder cache bust failed")
   );
 };
 
@@ -185,8 +186,8 @@ const getEmails = async (req, res) => {
 
     return res.json(responseData);
   } catch (err) {
-    console.error("[getEmails]", err.message);
-    return res.status(500).json({ error: "Failed to list emails" });
+    req.log.error({ stack: err.stack }, "getEmails failed: " + err.message);
+    return res.status(500).json({ message: "Failed to list emails" });
   }
 };
 
@@ -207,8 +208,8 @@ const getEmailById = async (req, res) => {
     if (err.name === "CastError") {
       return res.status(404).json({ message: "Email not found" });
     }
-    console.error("[getEmailById]", err.message);
-    return res.status(500).json({ error: "Failed to load email" });
+    req.log.error({ stack: err.stack }, "getEmailById failed: " + err.message);
+    return res.status(500).json({ message: "Failed to load email" });
   }
 };
 
@@ -280,8 +281,8 @@ const updateEmail = async (req, res) => {
     if (err.name === "CastError") {
       return res.status(404).json({ message: "Email not found" });
     }
-    console.error("[updateEmail]", err.message);
-    return res.status(500).json({ error: "Failed to update email" });
+    req.log.error({ stack: err.stack }, "updateEmail failed: " + err.message);
+    return res.status(500).json({ message: "Failed to update email" });
   }
 };
 
@@ -313,8 +314,8 @@ const deleteEmail = async (req, res) => {
     if (err.name === "CastError") {
       return res.status(404).json({ message: "Email not found" });
     }
-    console.error("[deleteEmail]", err.message);
-    return res.status(500).json({ error: "Failed to delete email" });
+    req.log.error({ stack: err.stack }, "deleteEmail failed: " + err.message);
+    return res.status(500).json({ message: "Failed to delete email" });
   }
 };
 
@@ -348,8 +349,8 @@ const archiveEmail = async (req, res) => {
     if (err.name === "CastError") {
       return res.status(404).json({ message: "Email not found" });
     }
-    console.error("[archiveEmail]", err.message);
-    return res.status(500).json({ error: "Failed to archive email" });
+    req.log.error({ stack: err.stack }, "archiveEmail failed: " + err.message);
+    return res.status(500).json({ message: "Failed to archive email" });
   }
 };
 
@@ -397,12 +398,12 @@ const cancelAction = async (req, res) => {
     // Revert the optimistic local change so the email reappears
     await revertLocalAction(req.user.id, job.data.action, job.data);
     await bustFolderCache(req.user.id);
-    console.log(`[Queue] Cancelled job ${jobId}`);
+    req.log?.info({ jobId }, "Cancelled queued action");
 
     return res.json({ message: "Action cancelled" });
   } catch (err) {
-    console.error("[cancelAction]", err.message);
-    return res.status(500).json({ error: "Failed to cancel action" });
+    req.log.error({ stack: err.stack }, "cancelAction failed: " + err.message);
+    return res.status(500).json({ message: "Failed to cancel action" });
   }
 };
 
@@ -428,12 +429,12 @@ const bulkCancelAction = async (req, res) => {
     // Revert the optimistic local changes for every email in the bulk action
     await revertLocalAction(req.user.id, job.data.action, job.data);
     await bustFolderCache(req.user.id);
-    console.log(`[Queue] Cancelled job ${jobId}`);
+    req.log?.info({ jobId }, "Cancelled queued action");
 
     return res.json({ message: "Bulk action cancelled" });
   } catch (err) {
-    console.error("[bulkCancelAction]", err.message);
-    return res.status(500).json({ error: "Failed to cancel bulk action" });
+    req.log.error({ stack: err.stack }, "bulkCancelAction failed: " + err.message);
+    return res.status(500).json({ message: "Failed to cancel bulk action" });
   }
 };
 
@@ -473,8 +474,8 @@ const bulkArchiveEmails = async (req, res) => {
 
     return res.json({ message: "Bulk archive queued", count: emails.length, jobId: `action:${req.user.id}:${jobId}` });
   } catch (err) {
-    console.error("[bulkArchiveEmails]", err.message);
-    return res.status(500).json({ error: "Failed to bulk archive" });
+    req.log.error({ stack: err.stack }, "bulkArchiveEmails failed: " + err.message);
+    return res.status(500).json({ message: "Failed to bulk archive" });
   }
 };
 
@@ -510,8 +511,8 @@ const bulkDeleteEmails = async (req, res) => {
 
     return res.json({ message: "Bulk delete queued", count: emails.length, jobId: `action:${req.user.id}:${jobId}` });
   } catch (err) {
-    console.error("[bulkDeleteEmails]", err.message);
-    return res.status(500).json({ error: "Failed to bulk delete" });
+    req.log.error({ stack: err.stack }, "bulkDeleteEmails failed: " + err.message);
+    return res.status(500).json({ message: "Failed to bulk delete" });
   }
 };
 

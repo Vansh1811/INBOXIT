@@ -1,4 +1,5 @@
 const { Queue } = require("bullmq");
+const logger = require("../utils/logger").child({ component: "sync-queue" });
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -41,7 +42,7 @@ const enqueueSyncJob = async (userId, type = "incremental") => {
       backoff: { type: "fixed", delay: 5000 },
     }
   );
-  console.log(`Sync job enqueued for user ${userId} [${type}]`);
+  logger.info(`Sync job enqueued for user ${userId} [${type}]`);
 };
 
 /** Idempotently arm the 60s repeating incremental sync for this user. */
@@ -58,7 +59,7 @@ const enqueuePeriodicSync = async (userId) => {
   );
   const client = await queueClient();
   await client.sadd(POLLER_REGISTRY_KEY, String(userId));
-  console.log(`Periodic sync ensured for user ${userId} [every ${POLL_INTERVAL_MS / 1000}s]`);
+  logger.info(`Periodic sync ensured for user ${userId} [every ${POLL_INTERVAL_MS / 1000}s]`);
 };
 
 /**
@@ -82,7 +83,7 @@ const stopPeriodicSync = async (userId) => {
   const client = await queueClient();
   await client.srem(POLLER_REGISTRY_KEY, String(userId));
 
-  console.log(`Periodic sync STOPPED for user ${userId}`);
+  logger.info(`Periodic sync STOPPED for user ${userId}`);
   return true;
 };
 

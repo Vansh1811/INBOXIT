@@ -63,17 +63,19 @@ export default function EmailDetail({ emailId, onClose, onEmailUpdated }: EmailD
       .finally(() => setLoading(false));
   }, [emailId, onEmailUpdated]);
 
+  const { addToast } = useToast();
+  const { addPendingAction, removePendingAction } = useActionContext();
+
   const toggle = async (field: "isStarred" | "isRead") => {
     if (!email) return;
     try {
       await api.patch(`/api/emails/${email._id}`, { [field]: !email[field] });
       setEmail((p) => p ? { ...p, [field]: !p[field] } : p);
       onEmailUpdated();
-    } catch {}
+    } catch {
+      addToast("Couldn't update the email. Please try again.", "error");
+    }
   };
-
-  const { addToast } = useToast();
-  const { addPendingAction, removePendingAction } = useActionContext();
 
   const handleArchive = async () => {
     if (!email) return;
@@ -109,7 +111,9 @@ export default function EmailDetail({ emailId, onClose, onEmailUpdated }: EmailD
         }
       });
     } catch {
+      // O-H2/M: silent failure here would hide the row with no explanation
       removePendingAction(email._id);
+      addToast("Couldn't reach the server. The email was not archived.", "error");
     }
   };
 
@@ -138,7 +142,9 @@ export default function EmailDetail({ emailId, onClose, onEmailUpdated }: EmailD
         }
       });
     } catch {
+      // O-H2/M: silent failure here would hide the row with no explanation
       removePendingAction(email._id);
+      addToast("Couldn't reach the server. The email was not deleted.", "error");
     }
   };
 

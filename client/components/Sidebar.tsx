@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useSyncContext } from "@/lib/contexts/SyncContext";
+import { useSocketContext } from "@/lib/contexts/SocketContext";
 import { cn } from "@/lib/utils/cn";
 import api from "@/lib/api";
 import {
@@ -55,6 +56,7 @@ export default function Sidebar({ mobile = false }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { syncState } = useSyncContext();
+  const { connected } = useSocketContext();
 
   const currentFolder = pathname.replace("/dashboard/", "").replace("/dashboard", "") || "inbox";
 
@@ -141,11 +143,12 @@ export default function Sidebar({ mobile = false }: SidebarProps) {
         <div className="relative flex items-center justify-center w-2 h-2">
           <div className={cn(
             "w-2 h-2 rounded-full",
-            syncState.isSyncing ? "bg-[var(--accent)] animate-pulse" : "bg-[var(--text-muted)]"
+            !connected ? "bg-red-500"
+            : syncState.isSyncing ? "bg-[var(--accent)] animate-pulse" : "bg-[var(--text-muted)]"
           )} />
         </div>
         <span className="text-[12px] font-medium text-[var(--text-muted)] flex-1">
-          {syncState.isSyncing ? "Syncing..." : "Connected"}
+          {!connected ? "Offline" : syncState.isSyncing ? "Syncing..." : "Connected"}
         </span>
         <button
           onClick={async () => {

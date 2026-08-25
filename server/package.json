@@ -8,6 +8,7 @@
     "test:security": "node --test tests/security.test.js",
     "test:classification": "node --test tests/classification.test.js",
     "test:pagination": "node --test tests/pagination.test.js",
+    "test:reliability": "node --test tests/reliability.test.js",
     "dev": "nodemon index.js",
     "start": "node index.js"
   },

@@ -2,8 +2,9 @@ const { Worker } = require("bullmq");
 const User = require("../models/User");
 const Email = require("../models/Email");
 const { getGmailClient } = require("../utils/gmailClient");
-const { resolveRollbackIds } = require("../utils/actionRollback");
+const { resolveRollbackIds, restrictRollbackToFailed } = require("../utils/actionRollback");
 const { actionQueue } = require("./actionQueue");
+const logger = require("../utils/logger").child({ component: "action-worker" });
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -29,7 +30,7 @@ async function reconcileLocalAfterFailure(data) {
       { _id: { $in: notDeletedIds }, userId: data.userId },
       { isDeleted: false }
     );
-    console.log(`[ActionWorker] ↩️  Reverted local delete for ${notDeletedIds.length} email(s)`);
+    logger.info({ count: notDeletedIds.length }, "Reverted local delete after final failure");
   }
 
   if (archiveIds.length) {
@@ -37,7 +38,7 @@ async function reconcileLocalAfterFailure(data) {
       { _id: { $in: archiveIds }, userId: data.userId },
       { $addToSet: { labels: "INBOX" } }
     );
-    console.log(`[ActionWorker] ↩️  Reverted local archive for ${archiveIds.length} email(s)`);
+    logger.info({ count: archiveIds.length }, "Reverted local archive after final failure");
   }
 }
 
@@ -45,7 +46,12 @@ const actionWorker = new Worker(
   "email-action",
   async (job) => {
     const { userId, gmailMessageId, action } = job.data;
-    console.log(`[ActionWorker] ${action} for ${Array.isArray(gmailMessageId) ? gmailMessageId.length + " message(s)" : gmailMessageId}`);
+    const log = logger.child({ jobId: job.id, userId, action });
+    const messageCount = Array.isArray(gmailMessageId) ? gmailMessageId.length : 1;
+    log.info(`Processing ${action} (${messageCount} message(s))`);
+
+    // Gmail ids whose batchModify failed during THIS attempt (bulk actions).
+    const failedGmailIds = [];
 
     try {
       const user = await User.findById(userId);
@@ -59,13 +65,13 @@ const actionWorker = new Worker(
           id: gmailMessageId,
           requestBody: { removeLabelIds: ["INBOX"] },
         });
-        console.log(`[Gmail] Archived: ${gmailMessageId}`);
+        log.info(`Gmail archived: ${gmailMessageId}`);
       } else if (action === "delete") {
         await gmail.users.messages.trash({
           userId: "me",
           id: gmailMessageId,
         });
-        console.log(`[Gmail] Trashed: ${gmailMessageId}`);
+        log.info(`Gmail trashed: ${gmailMessageId}`);
 
       } else if (action === "bulk-archive") {
         const messageIds = Array.isArray(gmailMessageId) ? gmailMessageId : [gmailMessageId];
@@ -77,10 +83,12 @@ const actionWorker = new Worker(
               userId: "me",
               requestBody: { ids: chunk, removeLabelIds: ["INBOX"] },
             });
-            console.log(`[Gmail] Bulk Archived chunk of ${chunk.length}`);
+            log.debug({ chunkSize: chunk.length }, "Bulk archive chunk applied");
           } catch (chunkErr) {
-            // Log partial failure but continue remaining chunks
-            console.error(`[ActionWorker] Archive chunk ${i} failed:`, chunkErr.message);
+            // Track failures — a partially-successful job must NOT be treated
+            // as fully successful (see failedGmailIds handling below).
+            failedGmailIds.push(...chunk);
+            logger.error({ userId, action, chunkIndex: i }, `Archive chunk failed: ${chunkErr.message}`);
           }
         }
 
@@ -95,14 +103,37 @@ const actionWorker = new Worker(
               userId: "me",
               requestBody: { ids: chunk, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] },
             });
-            console.log(`[Gmail] Bulk Trashed chunk of ${chunk.length}`);
+            log.debug({ chunkSize: chunk.length }, "Bulk trash chunk applied");
           } catch (chunkErr) {
-            console.error(`[ActionWorker] Trash chunk ${i} failed:`, chunkErr.message);
+            failedGmailIds.push(...chunk);
+            logger.error({ userId, action, chunkIndex: i }, `Trash chunk failed: ${chunkErr.message}`);
           }
         }
 
       } else {
         throw new Error(`Unknown action type: ${action}`);
+      }
+
+      // ── PARTIAL FAILURE HANDLING (O-C1) ────────────────────────────────
+      // A bulk job where SOME chunks failed must never be reported as
+      // successful with those ids silently skipped. Attach a rollback
+      // payload restricted to the failed subset and throw:
+      //   - non-final attempt → BullMQ retries the whole job (Gmail batch
+      //     mutations are idempotent, so already-applied ids are no-ops)
+      //   - final attempt → the catch below reconciles ONLY the failed ids
+      if (failedGmailIds.length > 0) {
+        const docs = await Email.find(
+          { userId, gmailMessageId: { $in: failedGmailIds } },
+          { _id: 1 }
+        ).lean();
+        const failedMongoIds = docs.map((d) => d._id.toString());
+        const restricted = restrictRollbackToFailed(job.data, failedMongoIds);
+
+        const err = new Error(
+          `${action} partially failed for ${failedGmailIds.length}/${messageCount} message(s)`
+        );
+        err.rollbackData = restricted; // null ⇒ nothing restorable; final handler falls back safely
+        throw err;
       }
     } catch (error) {
       const attempts = job.opts?.attempts ?? 1;
@@ -110,15 +141,19 @@ const actionWorker = new Worker(
       // the in-flight throw is attempt #attemptsMade+1.
       const isFinalFailure = job.attemptsMade + 1 >= attempts;
 
-      console.error(
-        `[ActionWorker] Failed ${action} (attempt ${job.attemptsMade + 1}/${attempts}):`,
-        error.message
+      log.error(
+        { attempt: `${job.attemptsMade + 1}/${attempts}`, final: isFinalFailure },
+        `Action failed: ${error.message}`
       );
 
       if (isFinalFailure) {
-        // No retry left → make local state match reality.
-        await reconcileLocalAfterFailure(job.data).catch((e) =>
-          console.error("[ActionWorker] Reconciliation failed:", e.message)
+        // No retry left → make local state match reality. A partial-failure
+        // error carries a rollback payload restricted to exactly the ids
+        // whose Gmail mutation failed; full failures fall back to the
+        // original job snapshot.
+        const rollbackData = error.rollbackData || job.data;
+        await reconcileLocalAfterFailure(rollbackData).catch((e) =>
+          log.error(`Reconciliation failed: ${e.message}`)
         );
       }
       throw error;
@@ -127,9 +162,14 @@ const actionWorker = new Worker(
   { connection, concurrency: 5 }
 );
 
-actionWorker.on("completed", (job) => console.log(`Action job completed: ${job.id}`));
+actionWorker.on("completed", (job) =>
+  logger.info({ jobId: job.id }, "Action job completed")
+);
 actionWorker.on("failed", (job, err) =>
-  console.error(`Action job failed: ${job?.id}`, err.message)
+  logger.error(
+    { jobId: job?.id, userId: job?.data?.userId, attempt: `${job?.attemptsMade}/${job?.opts?.attempts}` },
+    `Action job failed: ${err.message}`
+  )
 );
 
 module.exports = { actionWorker, reconcileLocalAfterFailure };
