@@ -4,6 +4,7 @@ const { redisClient } = require("../config/redis");
 const { isValidCategory, extractSenderDomain } = require("../services/categories");
 const { scanAndDelete } = require("../utils/cacheBust");
 const { resolveRollbackIds } = require("../utils/actionRollback");
+const { encodeCursor, decodeCursor, keysetBoundary } = require("../utils/cursor");
 
 /**
  * FOLDER CONTRACT
@@ -28,6 +29,9 @@ const buildFolderQuery = (folder) => {
   return null;
 };
 
+/** Fields returned for list rows (never bodyHtml/bodyText). */
+const LIST_PROJECTION = "from subject snippet receivedAt isRead isStarred category userOverride labels";
+
 /** Invalidate all cached folder listings for this user (SCAN — never KEYS). */
 const bustFolderCache = async (userId) => {
   await scanAndDelete(redisClient, `user:${userId}:folder:*`).catch((e) =>
@@ -35,39 +39,56 @@ const bustFolderCache = async (userId) => {
   );
 };
 
+/**
+ * LIST API — PAGINATION CONTRACT (Phase 4)
+ * ----------------------------------------
+ * Canonical ordering everywhere: receivedAt DESC, _id DESC (deterministic;
+ * _id breaks identical-timestamp ties so page boundaries are stable).
+ *
+ * NEW contract (cursor/keyset, used by the current client):
+ *   GET /api/emails?folder=X&limit=50[&cursor=BASE64][&search=S]
+ *   → 200 {
+ *       emails: [...],
+ *       pagination: { hasMore: bool, nextCursor: string|null, total: number|null }
+ *     }
+ *   - nextCursor is present iff hasMore; pass it back as ?cursor for the next page.
+ *   - total is computed ONLY on first-page requests (no cursor param) and is
+ *     cached with the payload — later pages omit it and clients keep the
+ *     last known value.
+ *   - Malformed cursor → 400 { message: "Invalid cursor" }.
+ *   - limit is clamped to [1, 200]; invalid values normalize to 50.
+ *
+ * LEGACY contract (deploy-order safety only — old deployed clients send
+ * offset/page and read totalCount; kept byte-compatible):
+ *   GET /api/emails?...&offset=N|page=P → { source, emails, totalCount }
+ *
+ * Filter semantics (Phase 2 contract, unchanged): folder ∈ special folders ∪
+ * canonical categories; unknown folder → 400; search NARROWS via $and with
+ * escaped regex; cache bypassed while searching.
+ */
 const getEmails = async (req, res) => {
   try {
     const userId = req.user.id;
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const search = req.query.search;
 
-    let skip = 0;
-    if (req.query.offset !== undefined) {
-      skip = parseInt(req.query.offset);
-      if (!Number.isFinite(skip) || skip < 0) skip = 0;
-    } else {
-      const page = parseInt(req.query.page) || 1;
-      skip = (page - 1) * limit;
-    }
+    // limit: non-numeric or <1 → default 50; hard cap 200
+    let limit = parseInt(req.query.limit);
+    if (!Number.isFinite(limit) || limit < 1) limit = 50;
+    if (limit > 200) limit = 200;
 
     const folderQuery = buildFolderQuery(req.query.folder);
     if (!folderQuery) {
       return res.status(400).json({ message: `Unknown folder: ${req.query.folder}` });
     }
 
-    // Base query: belongs to user, not trashed (trash view flips this)
     const query = {
       userId,
       ...folderQuery,
     };
-
-    // Trash view shows deleted mail; every other view hides it
     if (!folderQuery.isDeleted) {
       query.isDeleted = false;
     }
 
-    // Search must NARROW the current folder, never replace it.
-    // Folder conditions stay at the top level; search goes into $and.
     if (search) {
       const escaped = String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       query.$and = [
@@ -81,32 +102,88 @@ const getEmails = async (req, res) => {
       ];
     }
 
-    const cacheKey = `user:${userId}:folder:${req.query.folder || "inbox"}:skip:${skip}:limit:${limit}`;
+    const sort = { receivedAt: -1, _id: -1 }; // deterministic tie-breaking
 
-    if (!search) {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        return res.json({ source: "cache", ...JSON.parse(cached) });
+    // ── LEGACY MODE: old clients page by offset/page ────────────────────────
+    const isLegacy =
+      req.query.offset !== undefined || req.query.page !== undefined;
+
+    if (isLegacy) {
+      let skip = 0;
+      if (req.query.offset !== undefined) {
+        skip = parseInt(req.query.offset);
+        if (!Number.isFinite(skip) || skip < 0) skip = 0;
+      } else {
+        const page = parseInt(req.query.page) || 1;
+        skip = (page - 1) * limit;
       }
+
+      const cacheKey = `user:${userId}:folder:${req.query.folder || "inbox"}:skip:${skip}:limit:${limit}`;
+      if (!search) {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) return res.json({ source: "cache", ...JSON.parse(cached) });
+      }
+
+      const [emails, totalCount] = await Promise.all([
+        Email.find(query).sort(sort).skip(skip).limit(limit)
+          .select(LIST_PROJECTION).lean(),
+        Email.countDocuments(query),
+      ]);
+
+      const responseData = { emails, totalCount };
+      if (!search) {
+        await redisClient.set(cacheKey, JSON.stringify(responseData), "EX", 900);
+      }
+      return res.json({ source: "db", ...responseData });
     }
 
-    const [emails, totalCount] = await Promise.all([
-      Email.find(query)
-        .sort({ receivedAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .select("from subject snippet receivedAt isRead isStarred category userOverride labels")
-        .lean(),
-      Email.countDocuments(query)
-    ]);
+    // ── CURSOR MODE (current client) ─────────────────────────────────────────
+    let cursor = null;
+    if (req.query.cursor !== undefined && req.query.cursor !== "") {
+      cursor = decodeCursor(req.query.cursor);
+      if (!cursor) {
+        return res.status(400).json({ message: "Invalid cursor" });
+      }
+    }
+    const isFirstPage = !cursor;
 
-    const responseData = { emails, totalCount };
+    Object.assign(query, keysetBoundary(cursor));
+
+    const cacheKey = `user:${userId}:folder:${req.query.folder || "inbox"}:c:${req.query.cursor || "first"}:l:${limit}`;
+    if (!search) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) return res.json(JSON.parse(cached));
+    }
+
+    // limit+1 probe → hasMore without any count query
+    const rows = await Email.find(query).sort(sort)
+      .limit(limit + 1)
+      .select(LIST_PROJECTION).lean();
+
+    const hasMore = rows.length > limit;
+    const emails = hasMore ? rows.slice(0, limit) : rows;
+
+    const lastRow = emails[emails.length - 1];
+    const nextCursor = hasMore && lastRow
+      ? encodeCursor(lastRow.receivedAt, lastRow._id)
+      : null;
+
+    let total = null;
+    if (isFirstPage) {
+      // Count only when a fresh first page is built (cached thereafter).
+      total = await Email.countDocuments(query);
+    }
+
+    const responseData = {
+      emails,
+      pagination: { hasMore, nextCursor, total },
+    };
 
     if (!search) {
       await redisClient.set(cacheKey, JSON.stringify(responseData), "EX", 900);
     }
 
-    return res.json({ source: "db", ...responseData });
+    return res.json(responseData);
   } catch (err) {
     console.error("[getEmails]", err.message);
     return res.status(500).json({ error: "Failed to list emails" });

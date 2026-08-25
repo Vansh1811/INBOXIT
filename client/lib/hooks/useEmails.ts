@@ -13,34 +13,57 @@ export interface Email {
   category: string;
 }
 
-export interface EmailsResponse {
-  source: "cache" | "db";
+/** Phase 4 keyset-pagination contract. */
+export interface PaginationMeta {
+  hasMore: boolean;
+  nextCursor: string | null;
+  /** Present only on first-page responses; callers retain the last known value. */
+  total: number | null;
+}
+
+interface CursorPageResponse {
   emails: Email[];
-  totalCount: number; 
+  pagination: PaginationMeta;
 }
 
 const fetcher = (url: string) => api.get(url).then((res) => res.data);
 
-// 🔴 THE SHIFT: Replaced 'page' with 'offset'
-export function useEmails(folder: string, offset: number = 0, search: string = "", limit: number = 50) {
+/**
+ * Fetches ONE page for a given keyset cursor ("" = first page).
+ *
+ * Pure and side-effect free: page navigation state (the cursor stack) is owned
+ * by the caller. Each distinct cursor gets its own SWR key, so revisiting a
+ * previously visited page is an instant cache hit, and `keepPreviousData`
+ * prevents a flash of empty content while a new page loads.
+ */
+export function useEmails(
+  folder: string,
+  cursor: string = "",
+  search: string = "",
+  limit: number = 50
+) {
   const params = new URLSearchParams();
   params.set("folder", folder);
-  params.set("offset", String(offset)); // Pass offset to the backend
   params.set("limit", String(limit));
+  if (cursor) params.set("cursor", cursor);
   if (search) params.set("search", search);
 
   const key = `/api/emails?${params.toString()}`;
 
-  const { data, error, isLoading, mutate } = useSWR<EmailsResponse>(key, fetcher, {
+  const { data, error, isLoading, mutate } = useSWR<CursorPageResponse>(key, fetcher, {
     revalidateOnFocus: false,
-    keepPreviousData: true, 
+    keepPreviousData: true,
   });
 
   return {
     emails: data?.emails || [],
-    totalCount: data?.totalCount || 0,
+    hasMore: data?.pagination?.hasMore ?? false,
+    nextCursor: data?.pagination?.nextCursor ?? null,
+    /** null when this page's payload carried no total — caller keeps previous. */
+    freshTotal: data?.pagination?.total ?? null,
     isLoading,
     error,
     mutate,
+    isFirstPage: !cursor,
   };
 }

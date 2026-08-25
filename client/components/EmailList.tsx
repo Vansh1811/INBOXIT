@@ -21,9 +21,14 @@ interface EmailListProps { folder: string; }
 export default function EmailList({ folder }: EmailListProps) {
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery]         = useState("");
-  const [offset, setOffset]                   = useState(0);
+  // Keyset pagination state: cursorStack[i] = cursor used to fetch page i
+  // (stack[0] = "" = first page). Reset whenever folder or search changes.
+  const [cursorStack, setCursorStack]         = useState<string[]>([""]);
+  const [pageIndex, setPageIndex]             = useState(0);
+  // Last known total (only first-page payloads carry one)
+  const [lastTotal, setLastTotal]             = useState(0);
   const [isSyncingMore, setIsSyncingMore]     = useState(false);
-  
+
   const [selectedIds, setSelectedIds]         = useState<Set<string>>(new Set());
   const [lastSelectedIdx, setLastSelectedIdx] = useState<number | null>(null);
 
@@ -32,32 +37,42 @@ export default function EmailList({ folder }: EmailListProps) {
   const { socket }   = useSocketContext();
   const { incomingSyncs, clearIncomingSyncs } = useSyncContext();
   const { addPendingActions, removePendingAction, pendingActions, addPendingAction } = useActionContext();
-  const { emails, totalCount = 0, isLoading, mutate } = useEmails(folder, offset, searchQuery);
+  const cursor = cursorStack[Math.min(pageIndex, cursorStack.length - 1)] ?? "";
+  const { emails, hasMore, nextCursor, freshTotal, isLoading, mutate } =
+    useEmails(folder, cursor, searchQuery, limit);
 
-  useEffect(() => { 
-    setOffset(0); 
-    setSelectedEmailId(null); 
+  // Keep the last known total when a fresh one arrives (first pages only).
+  useEffect(() => {
+    if (freshTotal !== null) setLastTotal(freshTotal);
+  }, [freshTotal]);
+
+  useEffect(() => {
+    setCursorStack([""]);
+    setPageIndex(0);
+    setSelectedEmailId(null);
     setSelectedIds(new Set());
     setLastSelectedIdx(null);
   }, [folder, searchQuery]);
 
   useEffect(() => {
     if (!socket) return;
-    const onComplete = async () => { 
-      await mutate(); 
+    const onComplete = async () => {
+      await mutate();
       setIsSyncingMore(false);
-      clearIncomingSyncs(); 
+      clearIncomingSyncs();
     };
     socket.on("sync:complete", onComplete);
     return () => { socket.off("sync:complete", onComplete); };
   }, [socket, mutate, clearIncomingSyncs]);
 
-  const safeTotalCount = Math.max(totalCount, offset + emails.length);
-  const startCount     = safeTotalCount === 0 ? 0 : offset + 1;
-  const endCount       = Math.min(offset + limit, safeTotalCount);
+  const safeTotalCount = Math.max(lastTotal, pageIndex * limit + emails.length);
+  const startCount     = safeTotalCount === 0 ? 0 : pageIndex * limit + 1;
+  const endCount       = Math.min(pageIndex * limit + limit, safeTotalCount);
 
   const handleNextPage = async () => {
-    if (offset + limit >= safeTotalCount) {
+    if (!hasMore || !nextCursor) {
+      // End of local dataset → pull older mail from Gmail; sync:complete
+      // refetches the current page via mutate().
       setIsSyncingMore(true);
       try {
         await api.post("/sync/load-more");
@@ -66,12 +81,17 @@ export default function EmailList({ folder }: EmailListProps) {
         addToast("Failed to fetch older emails.", "error");
         setIsSyncingMore(false);
       }
+      return;
+    }
+    if (pageIndex + 1 < cursorStack.length) {
+      setPageIndex(pageIndex + 1); // revisiting an already-fetched page (cache hit)
     } else {
-      setOffset((p) => Math.max(0, Math.min(p + limit, safeTotalCount - limit)));
+      setCursorStack((s) => [...s, nextCursor]); // append new page cursor
+      setPageIndex(pageIndex + 1);
     }
   };
 
-  const handlePrevPage = () => setOffset((p) => Math.max(0, p - limit));
+  const handlePrevPage = () => setPageIndex((p) => Math.max(0, p - 1));
 
   const [focusedEmailId, setFocusedEmailId]   = useState<string | null>(null);
 
@@ -333,7 +353,7 @@ export default function EmailList({ folder }: EmailListProps) {
         endCount={endCount}
         isSyncingMore={isSyncingMore}
         isLoading={isLoading}
-        offset={offset}
+        canGoPrev={pageIndex > 0}
         setSearchQuery={setSearchQuery}
         handlePrevPage={handlePrevPage}
         handleNextPage={handleNextPage}

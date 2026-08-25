@@ -46,19 +46,27 @@ const emailSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ TEXT SEARCH
-emailSchema.index({ subject: "text", from: "text" });
-
 // ✅ UNIQUE per user (VERY IMPORTANT)
 emailSchema.index(
   { userId: 1, gmailMessageId: 1 },
   { unique: true }
 );
 
-// ✅ FAST INBOX QUERIES
+// ✅ BASE ORDERING — archive / trash / unread / search / pinned views and
+//    keyset seeks that lack a covering equality field. Multikey `labels`
+//    queries fall back to this when labels isn't the leading bound.
 emailSchema.index({ userId: 1, receivedAt: -1 });
 
 // ✅ FAST FOLDER (CATEGORY) QUERIES
 emailSchema.index({ userId: 1, category: 1, receivedAt: -1 });
+
+// ✅ FAST INBOX / UNREAD — equality on a labels element + sort order.
+//    Multikey index: matches any doc whose labels array contains the value.
+//    Covers the default inbox view ({userId, isDeleted:false, labels:"INBOX"})
+//    which previously residual-filtered over the entire mailbox.
+emailSchema.index({ userId: 1, labels: 1, receivedAt: -1 });
+// NOTE (Phase 4 audit): the former {subject:"text", from:"text"} index was
+// removed — no query ever used $text; it only added write amplification.
+// Run scripts/migrate-email-indexes.js once to drop it on existing databases.
 
 module.exports = mongoose.model("Email", emailSchema);

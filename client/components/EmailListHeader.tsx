@@ -10,7 +10,7 @@ interface EmailListHeaderProps {
   endCount: number;
   isSyncingMore: boolean;
   isLoading: boolean;
-  offset: number;
+  canGoPrev: boolean;
   setSearchQuery: (query: string) => void;
   handlePrevPage: () => void;
   handleNextPage: () => void;
@@ -23,7 +23,7 @@ export default function EmailListHeader({
   endCount,
   isSyncingMore,
   isLoading,
-  offset,
+  canGoPrev,
   setSearchQuery,
   handlePrevPage,
   handleNextPage,
@@ -58,7 +58,7 @@ export default function EmailListHeader({
           <button
             className="flex items-center justify-center w-7 h-7 rounded text-[var(--text-secondary)] cursor-pointer transition-colors duration-100 outline-none hover:not:disabled:bg-[var(--hover)] hover:not:disabled:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed"
             onClick={handlePrevPage}
-            disabled={offset === 0 || isLoading || isSyncingMore}
+            disabled={!canGoPrev || isLoading || isSyncingMore}
           >
             <ChevronLeft className="w-4 h-4" strokeWidth={1.5} />
           </button>
