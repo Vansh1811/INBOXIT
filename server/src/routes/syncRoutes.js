@@ -1,12 +1,24 @@
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const { protect } = require("../middleware/authMiddleware");
 const { refreshGmailToken } = require("../middleware/tokenRefreshMiddleware");
-const { enqueueSyncJob } = require("../queues/syncQueue"); 
+const { enqueueSyncJob } = require("../queues/syncQueue");
 const User = require("../models/User");
 
 const router = express.Router();
 
-router.post("/", protect, refreshGmailToken, async (req, res) => {
+// Sync jobs fan out into 500-email Gmail chunks — expensive by design.
+// Cap how often each user can enqueue them.
+const syncLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id?.toString() || req.ip,
+  message: { message: "Too many sync requests. Please wait before trying again." },
+});
+
+router.post("/", protect, refreshGmailToken, syncLimiter, async (req, res) => {
   const user = await User.findById(req.user.id);
 
   // ✅ If already synced before, just do incremental — not full
@@ -21,7 +33,7 @@ router.post("/", protect, refreshGmailToken, async (req, res) => {
   });
 });
 
-router.post("/load-more", protect, refreshGmailToken, async (req, res) => {
+router.post("/load-more", protect, refreshGmailToken, syncLimiter, async (req, res) => {
   const user = await User.findById(req.user.id);
 
   // 🔴 FIXED: Removed the nextPageToken blocker!

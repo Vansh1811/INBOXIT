@@ -81,12 +81,16 @@ const worker = new Worker(
       user.syncState.isSyncing = false;
       await user.save();
       
+      // Log only status codes / messages — never raw provider response bodies
+      const safeDetail = (e) =>
+        e?.response?.status ? `status=${e.response.status} ${e.message}` : e?.message;
+
       if (err.isTokenError) {
-        console.error(`[Worker] ❌ Token refresh failed:`, err.originalError?.response?.data || err.originalError?.message);
+        console.error(`[Worker] ❌ Token refresh failed:`, safeDetail(err.originalError));
         safeEmit(userId, "sync:failed", { error: err.message });
         throw err;
       } else {
-        console.error(`[Worker] ❌ Sync failed:`, err.response?.data || err.message);
+        console.error(`[Worker] ❌ Sync failed:`, safeDetail(err));
         safeEmit(userId, "sync:failed", { error: err.message });
         throw err;
       }

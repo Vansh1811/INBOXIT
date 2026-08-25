@@ -1,5 +1,11 @@
 const mongoose = require("mongoose");
+const { encryptToken, decryptToken } = require("../utils/tokenCrypto");
 
+// OAuth tokens are encrypted at rest (AES-256-GCM) via schema-level
+// setters/getters. All reads through normal (non-lean) queries return
+// plaintext to application code; all writes are encrypted before hitting
+// MongoDB. Legacy plaintext values pass through on read and are re-encrypted
+// on their next write — no manual migration required.
 const userSchema = new mongoose.Schema(
   {
     googleId: { type: String, unique: true, required: true }, // sub from Google
@@ -7,8 +13,8 @@ const userSchema = new mongoose.Schema(
     name: String,
     avatar: String,
 
-    accessToken: String,
-    refreshToken: String,
+    accessToken: { type: String, set: encryptToken, get: decryptToken },
+    refreshToken: { type: String, set: encryptToken, get: decryptToken },
     tokenExpiry: Date, // when accessToken expires
 
     lastHistoryId: String, // Gmail history cursor

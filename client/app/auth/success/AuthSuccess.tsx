@@ -1,26 +1,33 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import Cookies from "js-cookie";
+import { useRouter } from "next/navigation";
+import api from "@/lib/api";
 
+/**
+ * OAuth landing page. The backend sets an HttpOnly cookie during the
+ * Google callback redirect — no token is ever passed through the URL.
+ * We simply verify the session before entering the dashboard.
+ */
 export default function AuthSuccess() {
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   useEffect(() => {
-    const token = searchParams.get("token");
-    if (token) {
-      Cookies.set("jwt", token, {
-        expires: 7,
-        sameSite: "lax",
-        path: "/",
+    let cancelled = false;
+
+    api
+      .get("/auth/me")
+      .then(() => {
+        if (!cancelled) router.replace("/dashboard/inbox");
+      })
+      .catch(() => {
+        if (!cancelled) router.replace("/");
       });
-      router.replace("/dashboard/inbox");
-    } else {
-      router.replace("/");
-    }
-  }, [searchParams, router]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">

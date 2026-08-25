@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { useSyncContext } from "@/lib/contexts/SyncContext";
 import { cn } from "@/lib/utils/cn";
+import api from "@/lib/api";
 import { 
-  Inbox, Pin, Mail, 
+  Inbox, Pin, Mail, LogOut,
   Users, Activity, Receipt, Plane, 
   Archive, Trash2
 } from "lucide-react";
@@ -47,6 +48,7 @@ interface SidebarProps { mobile?: boolean; }
 
 export default function Sidebar({ mobile = false }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const { syncState } = useSyncContext();
 
   const currentFolder = pathname.replace("/dashboard/", "").replace("/dashboard", "") || "inbox";
@@ -129,7 +131,7 @@ export default function Sidebar({ mobile = false }: SidebarProps) {
         ))}
       </nav>
 
-      {/* ── SYNC STATUS (Breathing Dot) ── */}
+      {/* ── SYNC STATUS (Breathing Dot) + LOGOUT ── */}
       <div className="px-5 py-4 flex items-center gap-2 border-t border-[var(--border-subtle)]">
         <div className="relative flex items-center justify-center w-2 h-2">
           <div className={cn(
@@ -137,9 +139,24 @@ export default function Sidebar({ mobile = false }: SidebarProps) {
             syncState.isSyncing ? "bg-[var(--accent)] animate-pulse" : "bg-[var(--text-muted)]"
           )} />
         </div>
-        <span className="text-[12px] font-medium text-[var(--text-muted)]">
+        <span className="text-[12px] font-medium text-[var(--text-muted)] flex-1">
           {syncState.isSyncing ? "Syncing..." : "Connected"}
         </span>
+        <button
+          onClick={async () => {
+            try {
+              await api.post("/auth/logout");
+            } finally {
+              router.replace("/");
+              router.refresh();
+            }
+          }}
+          title="Log out"
+          aria-label="Log out"
+          className="flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors duration-100 bg-transparent border-none cursor-pointer outline-none"
+        >
+          <LogOut className="w-3.5 h-3.5" strokeWidth={1.5} />
+        </button>
       </div>
       
     </aside>

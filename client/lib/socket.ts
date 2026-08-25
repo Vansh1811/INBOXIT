@@ -1,13 +1,13 @@
 import { io, Socket } from "socket.io-client";
-import Cookies from "js-cookie";
 
 let socket: Socket | null = null;
 
 export const getSocket = (): Socket => {
   if (!socket) {
-    const token = Cookies.get("jwt");
     socket = io(process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000", {
-      auth: { token },
+      // Auth happens via the HttpOnly cookie sent with the handshake —
+      // no token is read from JS-accessible storage.
+      withCredentials: true,
       autoConnect: false,
     });
   }

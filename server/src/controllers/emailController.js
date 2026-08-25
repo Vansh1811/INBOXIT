@@ -219,10 +219,13 @@ const bulkCancelAction = async (req, res) => {
   }
 };
 
+const MAX_BULK_IDS = 100;
+
 const bulkArchiveEmails = async (req, res) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "Invalid ids" });
+    if (ids.length > MAX_BULK_IDS) return res.status(400).json({ message: `Too many ids (max ${MAX_BULK_IDS})` });
 
     const emails = await Email.find({ _id: { $in: ids }, userId: req.user.id, isDeleted: false });
     if (!emails.length) return res.status(404).json({ message: "No matching emails found" });
@@ -245,6 +248,7 @@ const bulkDeleteEmails = async (req, res) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "Invalid ids" });
+    if (ids.length > MAX_BULK_IDS) return res.status(400).json({ message: `Too many ids (max ${MAX_BULK_IDS})` });
 
     const emails = await Email.find({ _id: { $in: ids }, userId: req.user.id, isDeleted: false });
     if (!emails.length) return res.status(404).json({ message: "No matching emails found" });
