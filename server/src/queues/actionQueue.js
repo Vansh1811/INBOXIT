@@ -10,11 +10,25 @@ const connection = {
 
 const actionQueue = new Queue("email-action", { connection });
 
-const enqueueActionJob = async (userId, emailId, gmailMessageId, action) => {
-  const jobId = `action:${userId}:${emailId}`;
+/**
+ * @param {string} userId
+ * @param {string} emailKey       single email id, or a unique key like "bulk-<ts>"
+ * @param {string|string[]} gmailMessageIds
+ * @param {"delete"|"archive"|"bulk-trash"|"bulk-archive"} action
+ * @param {string[]} [mongoIds]   Mongo _id strings (bulk jobs) so a cancelled
+ *                                action can revert the immediate local change.
+ */
+const enqueueActionJob = async (userId, emailKey, gmailMessageIds, action, mongoIds = null) => {
+  const jobId = `action:${userId}:${emailKey}`;
   await actionQueue.add(
     "action",
-    { userId, emailId, gmailMessageId, action },
+    {
+      userId,
+      emailId: emailKey,
+      gmailMessageId: gmailMessageIds,
+      action,
+      ...(mongoIds ? { mongoIds } : {}),
+    },
     {
       delay: 5000, // 5 second delay for undo
       jobId, // Unique job ID so we can cancel it
@@ -24,7 +38,7 @@ const enqueueActionJob = async (userId, emailId, gmailMessageId, action) => {
       backoff: { type: "fixed", delay: 5000 },
     }
   );
-  console.log(`Action job enqueued for ${emailId} [${action}] (5s delay)`);
+  console.log(`Action job enqueued for ${emailKey} [${action}] (5s delay)`);
 };
 
 module.exports = { actionQueue, enqueueActionJob };

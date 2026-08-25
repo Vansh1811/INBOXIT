@@ -6,6 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:security": "node --test tests/security.test.js",
+    "test:classification": "node --test tests/classification.test.js",
     "dev": "nodemon index.js",
     "start": "node index.js"
   },

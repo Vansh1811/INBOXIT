@@ -36,29 +36,37 @@ const actionWorker = new Worker(
           id: gmailMessageId,
         });
         console.log(`[Gmail] Trashed: ${gmailMessageId}`);
-      } else if (action === "bulk-archive" || action === "bulk-delete") {
+      } else if (action === "bulk-archive") {
         const messageIds = Array.isArray(gmailMessageId) ? gmailMessageId : [gmailMessageId];
         // chunk into 1000s
         const chunkSize = 1000;
         for (let i = 0; i < messageIds.length; i += chunkSize) {
           const chunk = messageIds.slice(i, i + chunkSize);
           try {
-            if (action === "bulk-archive") {
-              await gmail.users.messages.batchModify({
-                userId: "me",
-                requestBody: { ids: chunk, removeLabelIds: ["INBOX"] },
-              });
-              console.log(`[Gmail] Bulk Archived chunk of ${chunk.length}`);
-            } else if (action === "bulk-delete") {
-              await gmail.users.messages.batchDelete({
-                userId: "me",
-                requestBody: { ids: chunk },
-              });
-              console.log(`[Gmail] Bulk Trashed chunk of ${chunk.length}`);
-            }
+            await gmail.users.messages.batchModify({
+              userId: "me",
+              requestBody: { ids: chunk, removeLabelIds: ["INBOX"] },
+            });
+            console.log(`[Gmail] Bulk Archived chunk of ${chunk.length}`);
           } catch (chunkErr) {
-            console.error(`[Worker Error] Failed chunk ${i} for ${action}:`, chunkErr.message);
+            console.error(`[Worker Error] Failed archive chunk ${i}:`, chunkErr.message);
             // Log partial failure but continue remaining chunks
+          }
+        }
+      } else if (action === "bulk-trash" || action === "bulk-delete") {
+        // TRASH semantics — identical to single delete. Never permanently delete.
+        const messageIds = Array.isArray(gmailMessageId) ? gmailMessageId : [gmailMessageId];
+        const chunkSize = 1000;
+        for (let i = 0; i < messageIds.length; i += chunkSize) {
+          const chunk = messageIds.slice(i, i + chunkSize);
+          try {
+            await gmail.users.messages.batchModify({
+              userId: "me",
+              requestBody: { ids: chunk, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] },
+            });
+            console.log(`[Gmail] Bulk Trashed chunk of ${chunk.length}`);
+          } catch (chunkErr) {
+            console.error(`[Worker Error] Failed trash chunk ${i}:`, chunkErr.message);
           }
         }
       }

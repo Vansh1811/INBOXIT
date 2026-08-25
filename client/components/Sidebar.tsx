@@ -5,9 +5,9 @@ import { useRouter, usePathname } from "next/navigation";
 import { useSyncContext } from "@/lib/contexts/SyncContext";
 import { cn } from "@/lib/utils/cn";
 import api from "@/lib/api";
-import { 
+import {
   Inbox, Pin, Mail, LogOut,
-  Users, Activity, Receipt, Plane, 
+  Briefcase, CreditCard, Pizza, Plane, Pill, Bell,
   Archive, Trash2
 } from "lucide-react";
 
@@ -17,6 +17,9 @@ type NavItem = {
   icon: React.ElementType;
 };
 
+// Slugs map 1:1 to backend folder queries:
+//   inbox/pinned/unread/archive/trash → special state queries
+//   jobs/finance/food/travel/health/social → canonical categories
 const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   {
     title: "INBOX",
@@ -29,10 +32,12 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
   {
     title: "SMART",
     items: [
-      { slug: "people", name: "People", icon: Users },
-      { slug: "updates", name: "Updates", icon: Activity },
-      { slug: "receipts", name: "Receipts", icon: Receipt },
+      { slug: "jobs", name: "Jobs", icon: Briefcase },
+      { slug: "finance", name: "Finance", icon: CreditCard },
+      { slug: "food", name: "Food", icon: Pizza },
       { slug: "travel", name: "Travel", icon: Plane },
+      { slug: "health", name: "Health", icon: Pill },
+      { slug: "social", name: "Social", icon: Bell },
     ],
   },
   {

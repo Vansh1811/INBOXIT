@@ -1,13 +1,23 @@
 const { getGmailClient } = require("../utils/gmailClient");
 const { extractBody, extractHeaders } = require("../utils/mimeParser");
-const { classify } = require("./classifier");
+const { classify, fromGmailTabs } = require("./classifier");
+const { UNCATEGORIZED } = require("./categories");
 const Email = require("../models/Email");
+const CategoryPreference = require("../models/CategoryPreference");
 const axios = require("axios");
 
 const CHUNK_SIZE = 500;
 const BATCH_SIZE = 10;
 
-const processEmail = async (gmail, messageId, userId) => {
+/** Load this user's learned sender→category preferences once per sync run. */
+const loadUserPreferences = async (userId) => {
+  const prefs = await CategoryPreference.find({ userId })
+    .select("senderDomain category")
+    .lean();
+  return Object.fromEntries(prefs.map((p) => [p.senderDomain, p.category]));
+};
+
+const processEmail = async (gmail, messageId, userId, userPrefs = {}, overriddenIds = new Set()) => {
   const res = await gmail.users.messages.get({
     userId: "me",
     id: messageId,
@@ -17,26 +27,19 @@ const processEmail = async (gmail, messageId, userId) => {
   const msg = res.data;
   const { from, to, subject } = extractHeaders(msg.payload?.headers);
   const { bodyHtml, bodyText } = extractBody(msg.payload);
-  
-  // 1. Get your custom rule-based categories
-  const customCategories = classify(from, subject);
-  const categories = [...customCategories];
-  
-  // 2. Look at Gmail's native labels
-  const gmailLabels = msg.labelIds || [];
-  
-  if (gmailLabels.includes("CATEGORY_PROMOTIONS")) categories.push("promotions");
-  if (gmailLabels.includes("CATEGORY_SOCIAL")) categories.push("social");
-  if (gmailLabels.includes("CATEGORY_UPDATES")) categories.push("updates");
-  if (gmailLabels.includes("CATEGORY_FORUMS")) categories.push("forums");
 
-  // 3. Remove duplicates
-  let uniqueCategories = [...new Set(categories)];
-  
-  // 4. Cleanup: If we found a specific category, remove "uncategorized"
-  if (uniqueCategories.length > 1) {
-    uniqueCategories = uniqueCategories.filter(c => c !== "uncategorized");
-  } 
+  const gmailLabels = msg.labelIds || [];
+
+  // 1. Rule-based / learned-preference classification (single winner)
+  let category = classify(from, subject, userPrefs);
+
+  // 2. Fall back to Gmail's own tab when our rules found nothing
+  if (category === UNCATEGORIZED) {
+    category = fromGmailTabs(gmailLabels) || UNCATEGORIZED;
+  }
+
+  // Never clobber a category the user set manually
+  const preserveCategory = overriddenIds.has(msg.id);
 
   return {
     userId,
@@ -49,9 +52,10 @@ const processEmail = async (gmail, messageId, userId) => {
     bodyHtml,
     bodyText,
     receivedAt: new Date(parseInt(msg.internalDate)),
-    categories: uniqueCategories, 
+    ...(preserveCategory ? {} : { category }),
     isRead:    !gmailLabels.includes("UNREAD"),
     isStarred:  gmailLabels.includes("STARRED") || false,
+    isDeleted:  gmailLabels.includes("TRASH"),
     labels:     gmailLabels,
   };
 };
@@ -115,6 +119,16 @@ const getExistingMessageIds = async (userId, gmailIds) => {
     { gmailMessageId: 1 }
   ).lean();
   return new Set(existing.map((e) => e.gmailMessageId));
+};
+
+/** Gmail ids whose category the user has manually overridden. */
+const getOverriddenMessageIds = async (userId, gmailIds) => {
+  if (!gmailIds.length) return new Set();
+  const docs = await Email.find(
+    { userId, gmailMessageId: { $in: gmailIds }, userOverride: true },
+    { gmailMessageId: 1 }
+  ).lean();
+  return new Set(docs.map((e) => e.gmailMessageId));
 };
 
 const refreshTokenIfNeeded = async (user) => {
@@ -217,6 +231,12 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
 
   console.log(`[EmailSyncService] Skipping ${skipped} already-synced, processing ${total} new`);
 
+  // Learned preferences + user-protected categories are loaded ONCE per run
+  const [userPrefs, overriddenIds] = await Promise.all([
+    loadUserPreferences(userId),
+    getOverriddenMessageIds(userId, allGmailIds),
+  ]);
+
   let saved = 0;
   let errors = 0;
   const deletedIds = [];
@@ -227,7 +247,7 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
     const parsedEmails = await Promise.all(
       batch.map(async ({ id }) => {
         try {
-          return await processEmail(gmail, id, userId);
+          return await processEmail(gmail, id, userId, userPrefs, overriddenIds);
         } catch (err) {
           errors++;
           if (err?.response?.status === 404) {
@@ -267,7 +287,7 @@ async function runSync({ user, syncType, onProgress, onEmailProcessed }) {
             gmailMessageId: email.gmailMessageId,
             from: email.from,
             subject: email.subject,
-            category: email.category, // frontend expects single category usually, but categories array exists too
+            category: email.category,
             receivedAt: email.receivedAt,
           });
         });

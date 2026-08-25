@@ -1,16 +1,7 @@
-import { CAT } from "@/lib/utils/email";
 import SearchBar from "@/components/SearchBar";
-import { cn } from "@/lib/utils/cn";
-import { 
-  Inbox, Briefcase, Bell, CreditCard, Car, Plane, Pizza, 
-  ShoppingBag, Pill, GraduationCap, Newspaper, User, Tag, 
+import {
   ChevronLeft, ChevronRight
 } from "lucide-react";
-
-const ICON_MAP: Record<string, React.ElementType> = {
-  Inbox, Briefcase, Bell, CreditCard, Car, Plane, Pizza, 
-  ShoppingBag, Pill, GraduationCap, Newspaper, User, Tag
-};
 
 interface EmailListHeaderProps {
   folder: string;
@@ -37,9 +28,6 @@ export default function EmailListHeader({
   handlePrevPage,
   handleNextPage,
 }: EmailListHeaderProps) {
-  const folderCat = CAT[folder === "inbox" ? "uncategorized" : folder] ?? CAT.uncategorized;
-  const Icon = ICON_MAP[folderCat.icon] || Inbox;
-
   return (
     <div className="flex items-center justify-between px-6 h-14 shrink-0 gap-4 bg-[var(--bg-inbox)] border-b border-[var(--border-subtle)]">
       

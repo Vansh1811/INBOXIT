@@ -1,9 +1,38 @@
-export const CAT: Record<string, { label: string; icon: string }> = {
+/**
+ * CANONICAL CATEGORY CONTRACT (frontend mirror of
+ * server/src/services/categories.js — keep both in sync).
+ *
+ * Every email has exactly ONE primary `category` from this vocabulary.
+ */
+
+export const CATEGORIES = [
+  "uncategorized",
+  "jobs",
+  "social",
+  "finance",
+  "travel",
+  "food",
+  "shopping",
+  "health",
+  "education",
+  "newsletters",
+  "personal",
+  "promotions",
+  "updates",
+] as const;
+
+export type Category = (typeof CATEGORIES)[number];
+
+interface CategoryMeta {
+  label: string;
+  icon: string;
+}
+
+export const CAT: Record<string, CategoryMeta> = {
   uncategorized: { label: "Inbox",       icon: "Inbox" },
   jobs:          { label: "Jobs",        icon: "Briefcase" },
   social:        { label: "Social",      icon: "Bell" },
   finance:       { label: "Finance",     icon: "CreditCard" },
-  cabs:          { label: "Cabs",        icon: "Car" },
   travel:        { label: "Travel",      icon: "Plane" },
   food:          { label: "Food",        icon: "Pizza" },
   shopping:      { label: "Shopping",    icon: "ShoppingBag" },
@@ -12,23 +41,22 @@ export const CAT: Record<string, { label: string; icon: string }> = {
   newsletters:   { label: "Newsletters", icon: "Newspaper" },
   personal:      { label: "Personal",    icon: "User" },
   promotions:    { label: "Promotions",  icon: "Tag" },
+  updates:       { label: "Updates",     icon: "Activity" },
 };
 
-export const FOLDER_ICONS: Record<string, string> = {
-  inbox:       "Inbox",
-  jobs:        "Briefcase",
-  social:      "Bell",
-  finance:     "CreditCard",
-  cabs:        "Car",
-  travel:      "Plane",
-  food:        "Pizza",
-  shopping:    "ShoppingBag",
-  health:      "Pill",
-  education:   "GraduationCap",
-  newsletters: "Newspaper",
-  personal:    "User",
-  promotions:  "Tag",
+/** Pseudo-folders that are state queries rather than categories. */
+export const SPECIAL_FOLDERS: Record<string, CategoryMeta> = {
+  inbox:   { label: "Inbox",   icon: "Inbox" },
+  pinned:  { label: "Pinned",  icon: "Pin" },
+  unread:  { label: "Unread",  icon: "Mail" },
+  archive: { label: "Archive", icon: "Archive" },
+  trash:   { label: "Trash",   icon: "Trash2" },
 };
+
+/** Icon name for any folder slug (special folders take precedence). */
+export function folderIcon(slug: string): string {
+  return SPECIAL_FOLDERS[slug]?.icon ?? CAT[slug]?.icon ?? "Inbox";
+}
 
 export function formatTime(dateStr: string | Date): string {
   const date = new Date(dateStr);
@@ -38,16 +66,16 @@ export function formatTime(dateStr: string | Date): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function senderName(from: string) { 
-  return from.split("<")[0].replace(/"/g, "").trim(); 
+export function senderName(from: string) {
+  return from.split("<")[0].replace(/"/g, "").trim();
 }
 
-export function senderInitial(from: string) { 
-  return (senderName(from)[0] ?? "?").toUpperCase(); 
+export function senderInitial(from: string) {
+  return (senderName(from)[0] ?? "?").toUpperCase();
 }
 
-export function senderEmail(from: string) { 
-  return from.match(/<(.+)>/)?.[1] ?? from; 
+export function senderEmail(from: string) {
+  return from.match(/<(.+)>/)?.[1] ?? from;
 }
 
 export function stripHtml(html: string): string {

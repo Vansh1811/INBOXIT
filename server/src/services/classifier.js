@@ -1,16 +1,25 @@
 // src/services/classifier.js
 
 /**
- * Professional multi-label email classifier
- * - Supports multiple categories per email
- * - Uses priority to resolve ordering
- * - Easy to extend via RULES array
+ * Rule-based email classifier — SINGLE canonical category output.
+ *
+ * Rules are evaluated in priority order; the FIRST match wins and its
+ * `category` value is returned. This matches InboxIt's product model:
+ * each email lives in exactly one folder.
+ *
+ * Extend by adding entries to RULES (lower priority number = higher
+ * precedence). Category values MUST exist in services/categories.js.
  */
 
-// src/services/classifier.js
+const {
+  UNCATEGORIZED,
+  GMAIL_TAB_MAP,
+  isValidCategory,
+  extractSenderDomain,
+} = require("./categories");
 
 const RULES = [
-  // 1) JOBS — unchanged
+  // 1) JOBS
   {
     category: "jobs",
     priority: 1,
@@ -18,7 +27,7 @@ const RULES = [
     subject: /(job|hiring|opening|vacancy|position|role|shortlisted|interview|assessment|online test|offer letter|recruitment|application status)/i,
   },
 
-  // 2) SOCIAL — unchanged
+  // 2) SOCIAL
   {
     category: "social",
     priority: 2,
@@ -26,7 +35,7 @@ const RULES = [
     subject: /(mentioned you|commented|replied|liked|follower|following|connection|invite|tagged you|pull request|issue (opened|closed))/i,
   },
 
-  // 3) FINANCE — unchanged
+  // 3) FINANCE
   {
     category: "finance",
     priority: 3,
@@ -34,15 +43,15 @@ const RULES = [
     subject: /(statement|transaction alert|txn|credited|debited|payment (successful|failed)|upi ref|utr|imps|neft|rtgs|refund|emi due|bill generated|minimum due|credit card|loan)/i,
   },
 
-  // 4) TRAVEL — includes cabs + trains + flights + hotels
+  // 4) TRAVEL — cabs + trains + flights + hotels
   {
     category: "travel",
     priority: 4,
-    from: /uber|ola|rapido|indrive|irctc|ixigo|makemytrip|goibibo|yatra|cleartrip|booking\.com|airbnb|oyo|indigo|spicejet|airasia|vistara|air india|akasa air/i,
-    subject: /(your ride|trip (started|completed)|ride (invoice|receipt)|driver (is arriving|details)|pickup|drop|fare|booking (confirmation|confirmed)|pnr|ticket|flight|train|bus|hotel|boarding pass|check[- ]in|check[- ]out|itinerary)/i,
+    from: /uber|ola|rapido|indrive|irctc|ixigo|makemytrip|goibibo|yatra|cleartrip|booking\.com|airbnb|agoda|oyo|indigo|spicejet|airasia|vistara|air india|akasa air|trip\.com/i,
+    subject: /(your ride|trip (started|completed)|ride (invoice|receipt)|driver (is arriving|details)|pickup|drop|fare|booking (confirmation|confirmed)|pnr|ticket|flight|train|bus|hotel|boarding pass|check[- ]in|check[- ]out|itinerary|reschedule|cancellation|refund issued for booking)/i,
   },
 
-  // 5) FOOD — Swiggy / Zomato / grocery only
+  // 5) FOOD — delivery + grocery
   {
     category: "food",
     priority: 5,
@@ -57,7 +66,6 @@ const RULES = [
     from: /amazon|flipkart|myntra|ajio|meesho|nykaa|tatacliq|croma|reliance digital|snapdeal|jiomart|ikea|pepperfry|firstcry/i,
     subject: /(order (placed|confirmed|details)|shipped|dispatched|out for delivery|delivered|package|tracking id|track shipment|return (initiated|approved)|replacement|refund (processed|initiated)|invoice|warranty)/i,
   },
-
 
   // 7) HEALTH
   {
@@ -75,56 +83,72 @@ const RULES = [
     subject: /course|enroll(ed)?|registration|class (schedule|reminder)|live class|lecture|assignment|quiz|test series|mock test|exam|certificate|completion|cohort|bootcamp|webinar|masterclass|workshop/i,
   },
 
-  // 9) TRAVEL (non‑cab: flights, trains, hotels)
-  {
-    category: "travel",
-    priority: 9,
-    from: /irctc|ixigo|makemytrip|goibibo|yatra|cleartrip|booking\.com|airbnb|agoda|oyo|indigo|spicejet|airasia|vistara|air india|akasa air|trip\.com/i,
-    subject: /booking (confirmation|confirmed)|pnr|ticket|flight|train|bus|hotel|check[- ]in|check[- ]out|itinerary|boarding pass|reschedule|cancellation|refund issued for booking/i,
-  },
-
-  // 10) NEWSLETTERS / UPDATES (blogs, dev stuff, Substack)
+  // 9) NEWSLETTERS / UPDATES (blogs, dev digests, Substack)
   {
     category: "newsletters",
-    priority: 10,
+    priority: 9,
     from: /substack|newsletter|tinyletter|buttondown|mailchimp|sendgrid|beehiiv|convertkit|hashnode|dev\.to|daily dev|info@|updates@|news@/i,
     subject: /newsletter|weekly (roundup|digest)|daily (digest|update)|changelog|release notes|product update|what's new|this week in|issue #[0-9]+/i,
   },
 
-  // 11) PERSONAL (friends, generic mail, but not from obvious systems)
+  // 10) PERSONAL (consumer mailbox providers + human-sounding subjects)
   {
     category: "personal",
-    priority: 11,
-    from: /gmail\.com|outlook\.com|yahoo\.com|proton\.me|icloud\.com/i, // broad, but will lose to earlier rules
+    priority: 10,
+    from: /gmail\.com|outlook\.com|yahoo\.com|proton\.me|icloud\.com/i,
     subject: /(hey|hi|hello|long time|checking in|catch up|invitation|wedding|birthday|housewarming|congratulations)/i,
   },
 
-  // 12) PROMOTIONS – generic marketing catch‑all, lowest priority
+  // 11) PROMOTIONS – generic marketing catch-all, lowest priority
   {
     category: "promotions",
-    priority: 20,
+    priority: 11,
     from: /no[-_.]?reply|noreply|marketing|offers?|promo|deals?|sales?|campaign|mailer|notifications?@/i,
     subject: /sale|discount|offer|deal|coupon|cashback|limited time|hurry|last day|flat [0-9]{2}% off|exclusive|special price|festive sale|big billion|great indian festival/i,
   },
 ];
 
+/**
+ * Resolve the Gmail native tab → canonical category, if any.
+ * @param {string[]} gmailLabels
+ * @returns {string|null}
+ */
+function fromGmailTabs(gmailLabels = []) {
+  for (const label of gmailLabels) {
+    const mapped = GMAIL_TAB_MAP[label];
+    if (mapped) return mapped;
+  }
+  return null;
+}
 
 /**
- * Classify an email into categories
- * @param {string} from - sender email/name
- * @param {string} subject - email subject
- * @returns {string[]} categories
+ * Classify an email into exactly ONE canonical category.
+ *
+ * Precedence:
+ *   1. userPrefs[senderDomain]   — learned from the user's own corrections
+ *   2. first matching rule       — by ascending priority number
+ *   3. Gmail tab mapping         — applied by caller via fromGmailTabs()
+ *
+ * @param {string} from      raw From header
+ * @param {string} subject
+ * @param {Object<string,string>} userPrefs  map of senderDomain → category
+ * @returns {string} canonical category
  */
-const classify = (from = "", subject = "") => {
-  const f = from.toLowerCase();
-  const s = subject.toLowerCase();
+const classify = (from = "", subject = "", userPrefs = {}) => {
+  const domain = extractSenderDomain(from);
+  if (domain && Object.prototype.hasOwnProperty.call(userPrefs, domain)) {
+    const pref = userPrefs[domain];
+    if (isValidCategory(pref)) return pref;
+  }
 
-  const matches = RULES
-    .filter(rule => rule.from.test(f) || rule.subject.test(s))
-    .sort((a, b) => a.priority - b.priority)
-    .map(rule => rule.category);
+  const f = String(from).toLowerCase();
+  const s = String(subject).toLowerCase();
 
-  return matches.length ? matches : ["uncategorized"];
+  const rule = RULES.filter((r) => r.from.test(f) || r.subject.test(s)).sort(
+    (a, b) => a.priority - b.priority
+  )[0];
+
+  return rule ? rule.category : UNCATEGORIZED;
 };
 
-module.exports = { classify };
+module.exports = { classify, fromGmailTabs, RULES };

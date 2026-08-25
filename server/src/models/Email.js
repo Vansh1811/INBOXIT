@@ -1,17 +1,18 @@
 const mongoose = require("mongoose");
+const { CATEGORIES } = require("../services/categories");
 
 const emailSchema = new mongoose.Schema(
   {
-    userId: { 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: "User", 
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
       required: true,
-      index: true 
+      index: true
     },
 
-    gmailMessageId: { 
-      type: String, 
-      required: true 
+    gmailMessageId: {
+      type: String,
+      required: true
     },
 
     threadId: String,
@@ -24,17 +25,21 @@ const emailSchema = new mongoose.Schema(
 
     receivedAt: { type: Date, index: true },
 
-    // ✅ NEW (multi-category)
-    categories: {
-      type: [String],
-      default: ["uncategorized"],
-      index: true,
+    // CANONICAL single category (see services/categories.js).
+    // Replaces the former multi-value `categories` array.
+    category: {
+      type: String,
+      enum: CATEGORIES,
+      default: "uncategorized",
     },
+
+    // True once the user manually assigns a category; the sync pipeline
+    // never overwrites the category of an overridden email.
+    userOverride: { type: Boolean, default: false },
 
     isRead: { type: Boolean, default: false },
     isStarred: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
-    userOverride: { type: Boolean, default: false },
 
     labels: [String],
   },
@@ -52,5 +57,8 @@ emailSchema.index(
 
 // ✅ FAST INBOX QUERIES
 emailSchema.index({ userId: 1, receivedAt: -1 });
+
+// ✅ FAST FOLDER (CATEGORY) QUERIES
+emailSchema.index({ userId: 1, category: 1, receivedAt: -1 });
 
 module.exports = mongoose.model("Email", emailSchema);
