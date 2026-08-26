@@ -3,6 +3,9 @@ const { extractBody, extractHeaders } = require("../utils/mimeParser");
 const { classifyDetailed, fallbackClassification } = require("./classifier");
 const { isValidCategory, extractSenderDomain } = require("./categories");
 const { aiClassifier } = require("./ai/aiClassifier");
+const {
+  activeCategoryOf,
+} = require("./preferencePolicy");
 const { shouldAdvanceCursor } = require("../utils/syncPolicy");
 const { isRevokedGmailError, classifyGmailError } = require("../utils/gmailErrors");
 const Email = require("../models/Email");
@@ -15,11 +18,27 @@ const CHUNK_SIZE = 500;
 const BATCH_SIZE = 10;
 
 /** Load this user's learned sender→category preferences once per sync run. */
+/**
+ * Load ACTIVE per-user sender preferences once per sync run.
+ *
+ * Phase 10: only records whose evidence satisfies the policy
+ * (services/preferencePolicy.js) are returned — weak/one-off corrections
+ * never override deterministic rules. Bounded by the number of distinct
+ * domains a user has actively corrected.
+ */
 const loadUserPreferences = async (userId) => {
   const prefs = await CategoryPreference.find({ userId })
-    .select("senderDomain category")
+    .select("senderDomain category tallies total")
     .lean();
-  return Object.fromEntries(prefs.map((p) => [p.senderDomain, p.category]));
+  const map = {};
+  for (const p of prefs) {
+    const cat = activeCategoryOf({
+      tallies: p.tallies || {},
+      total: p.total || 0,
+    });
+    if (cat && isValidCategory(cat)) map[p.senderDomain] = cat;
+  }
+  return map;
 };
 
 /** AI budget per sync run — bounds cost even for huge uncertain batches. */
@@ -471,4 +490,4 @@ async function runSync({ user, syncType, jobId, onProgress }) {
   };
 }
 
-module.exports = { runSync };
+module.exports = { runSync, loadUserPreferences };

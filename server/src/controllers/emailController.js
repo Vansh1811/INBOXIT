@@ -243,6 +243,16 @@ const updateEmail = async (req, res) => {
       return res.status(400).json({ message: "No valid fields provided" });
     }
 
+    // Original category needed to (a) detect a real correction vs a no-op
+    // re-affirmation and (b) keep idempotent requests from inflating evidence.
+    const beforeDoc = await Email.findOne(
+      { _id: req.params.id, userId: req.user.id },
+      { category: 1 }
+    ).lean();
+    if (!beforeDoc) {
+      return res.status(404).json({ message: "Email not found" });
+    }
+
     const email = await Email.findOneAndUpdate(
       {
         _id: req.params.id,
@@ -257,15 +267,48 @@ const updateEmail = async (req, res) => {
       return res.status(404).json({ message: "Email not found" });
     }
 
-    // Learn: sender domain → chosen category
-    if (update.category) {
+    // ── Phase 10: explicit feedback recording ─────────────────────────────
+    // Idempotent by design: a PATCH that does not actually change the email's
+    // category (e.g. re-affirming the same value on the same email) must not
+    // inflate correction evidence. Compared against the PRE-update category.
+    //
+    // Deliberate partial-failure handling: the primary mutation has already
+    // succeeded, so a preference-recording failure is logged and swallowed —
+    // the user keeps their category change; learning may miss one event.
+    if (
+      update.category &&
+      update.category !== beforeDoc.category // real change vs no-op re-affirm
+    ) {
       const domain = extractSenderDomain(email.from);
       if (domain) {
-        await CategoryPreference.updateOne(
-          { userId: req.user.id, senderDomain: domain },
-          { category: update.category },
-          { upsert: true }
-        );
+        try {
+          const outcome = await CategoryPreference.recordFeedback(
+            req.user.id,
+            domain,
+            update.category
+          );
+          if (outcome.activated) {
+            req.log?.info(
+              { senderDomain: domain, category: update.category, evidence: outcome.totalEvidence },
+              "Preference activated from consistent corrections"
+            );
+          } else if (outcome.reversed) {
+            req.log?.info(
+              { senderDomain: domain, from: outcome.previousActive, to: outcome.activeCategory },
+              "Preference reversed by newer corrections"
+            );
+          } else if (outcome.weakened) {
+            req.log?.info(
+              { senderDomain: domain },
+              "Previous preference weakened below activation threshold"
+            );
+          }
+        } catch (fbErr) {
+          req.log?.warn(
+            { senderDomain: domain, err: fbErr.message },
+            "Feedback persistence failed — category update retained"
+          );
+        }
       }
     }
 
