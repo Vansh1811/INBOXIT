@@ -1,10 +1,12 @@
 "use client";
 
 import { cn } from "@/lib/utils/cn";
-import { ChevronLeft, MailOpen, Mail, Star, Archive, Trash2 } from "lucide-react";
+import { ChevronLeft, MailOpen, Mail, Star, Archive, Trash2, FolderInput } from "lucide-react";
 
-import { CategoryMeta } from "@/lib/utils/email";
+import { CategoryMeta, Category } from "@/lib/utils/email";
 import { EmailDetailData } from "./EmailDetail";
+import { useState } from "react";
+import CategoryMenu from "./CategoryMenu";
 
 interface EmailDetailToolbarProps {
   email: EmailDetailData;
@@ -13,6 +15,7 @@ interface EmailDetailToolbarProps {
   toggle: (field: "isStarred" | "isRead") => void;
   handleArchive: () => void;
   handleDelete: () => void;
+  handleMove: (newCategory: Category) => void;
 }
 
 export default function EmailDetailToolbar({
@@ -22,10 +25,12 @@ export default function EmailDetailToolbar({
   toggle,
   handleArchive,
   handleDelete,
+  handleMove,
 }: EmailDetailToolbarProps) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   return (
     <div className="flex items-center justify-between h-14 shrink-0 bg-transparent">
-      
+
       {/* Back / Close */}
       <div className="flex gap-4">
         <button
@@ -45,7 +50,7 @@ export default function EmailDetailToolbar({
         >
           Reply
         </a>
-        
+
         <div className="w-px h-4 bg-[var(--border-subtle)] mx-2" />
         <button
           className="flex items-center justify-center w-8 h-8 rounded border-none bg-transparent text-[var(--text-secondary)] cursor-pointer transition-colors duration-100 hover:text-[var(--text-primary)] hover:bg-[var(--hover)] outline-none"
@@ -67,14 +72,38 @@ export default function EmailDetailToolbar({
           onClick={() => toggle("isStarred")}
           title={email.isStarred ? "Unstar" : "Star"}
         >
-          <Star 
-            className="w-4 h-4" 
-            fill={email.isStarred ? "currentColor" : "none"} 
-            strokeWidth={1.5} 
+          <Star
+            className="w-4 h-4"
+            fill={email.isStarred ? "currentColor" : "none"}
+            strokeWidth={1.5}
           />
         </button>
 
         <div className="w-px h-4 bg-[var(--border-subtle)] mx-1" />
+
+        <div className="relative">
+          <button
+            className={cn(
+              "flex items-center justify-center w-8 h-8 rounded border-none bg-transparent cursor-pointer transition-colors duration-100 outline-none",
+              isMenuOpen ? "text-[var(--text-primary)] bg-[var(--hover)]" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--hover)]"
+            )}
+            onClick={() => setIsMenuOpen((prev) => !prev)}
+            title="Move to..."
+          >
+            <FolderInput className="w-4 h-4" strokeWidth={1.5} />
+          </button>
+
+          {isMenuOpen && (
+            <CategoryMenu
+              currentCategory={email.category}
+              onSelect={(cat) => {
+                setIsMenuOpen(false);
+                handleMove(cat);
+              }}
+              onClose={() => setIsMenuOpen(false)}
+            />
+          )}
+        </div>
 
         <button
           className="flex items-center justify-center w-8 h-8 rounded border-none bg-transparent text-[var(--text-secondary)] cursor-pointer transition-colors duration-100 hover:text-[var(--accent)] hover:bg-[var(--hover)] outline-none"

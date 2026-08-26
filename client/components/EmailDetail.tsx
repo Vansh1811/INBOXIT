@@ -85,16 +85,16 @@ export default function EmailDetail({ emailId, onClose, onEmailUpdated }: EmailD
       addPendingAction(email._id, "archive");
       onClose(); // Hide detail view
       await api.post(`/api/emails/${email._id}/archive`);
-      
+
       let secondsLeft = 5;
       const toastId = Math.random().toString(36).slice(2, 9);
-      
+
       // We'll handle the countdown in a custom toast logic or just update the message.
       // Wait, ToastContext doesn't have an updateToast method.
       // Let's modify ToastContext to support a duration, or just rely on the static text.
       // Ah, the user requested "Undo (5) -> Undo (4) ...".
       // Let's pass a `countdown` property to the action, which Toast component will use to render the number.
-      
+
       addToast(`Archived "${email.subject}"`, "info", {
         label: "Undo",
         countdown: 5,
@@ -125,7 +125,7 @@ export default function EmailDetail({ emailId, onClose, onEmailUpdated }: EmailD
       addPendingAction(email._id, "delete");
       onClose(); // Hide detail view
       await api.delete(`/api/emails/${email._id}`);
-      
+
       addToast(`Deleted "${email.subject}"`, "info", {
         label: "Undo",
         countdown: 5,
@@ -147,6 +147,40 @@ export default function EmailDetail({ emailId, onClose, onEmailUpdated }: EmailD
       // O-H2/M: silent failure here would hide the row with no explanation
       removePendingAction(email._id);
       addToast("Couldn't reach the server. The email was not deleted.", "error");
+    }
+  };
+
+  const handleMove = async (newCategory: string) => {
+    if (!email) return;
+    const previousCategory = email.category;
+    const previousClassificationSource = email.classificationSource;
+    const previousUserOverride = email.userOverride;
+
+    // Optimistic update
+    setEmail((p) => p ? { ...p, category: newCategory, classificationSource: "user", userOverride: true } : p);
+
+    try {
+      const res = await api.patch(`/api/emails/${email._id}`, { category: newCategory });
+      // Reconcile with actual response
+      setEmail((p) => p ? { ...p, ...res.data } : p);
+      onEmailUpdated();
+
+      const newCatMeta = CAT[newCategory] || { label: newCategory };
+      addToast(`Moved to ${newCatMeta.label} — we'll remember this`, "success");
+    } catch (err: unknown) {
+      // Rollback
+      setEmail((p) => p ? { ...p, category: previousCategory, classificationSource: previousClassificationSource, userOverride: previousUserOverride } : p);
+      let errorMessage = "Couldn't move the email. Please try again.";
+      if (typeof err === "object" && err !== null && "response" in err) {
+        const response = (err as Record<string, unknown>).response as Record<string, unknown>;
+        if (response && typeof response === "object" && "data" in response) {
+          const data = response.data as Record<string, unknown>;
+          if (data && typeof data.message === "string") {
+            errorMessage = data.message;
+          }
+        }
+      }
+      addToast(errorMessage, "error");
     }
   };
 
@@ -204,6 +238,7 @@ export default function EmailDetail({ emailId, onClose, onEmailUpdated }: EmailD
                 toggle={toggle}
                 handleArchive={handleArchive}
                 handleDelete={handleDelete}
+                handleMove={handleMove}
               />
             </div>
           </div>
