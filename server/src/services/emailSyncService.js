@@ -1,6 +1,13 @@
 const { getGmailClient } = require("../utils/gmailClient");
 const { extractBody, extractHeaders } = require("../utils/mimeParser");
 const { classifyDetailed, fallbackClassification } = require("./classifier");
+const {
+  evaluateCategoryHistory,
+  applyContext,
+  combineEvaluations,
+  CONTEXT_ELIGIBLE_MAX_CONFIDENCE,
+} = require("./contextPolicy");
+const { createBatchedContextLoader } = require("./contextResolver");
 const { isValidCategory, extractSenderDomain } = require("./categories");
 const { aiClassifier } = require("./ai/aiClassifier");
 const {
@@ -50,7 +57,8 @@ const processEmail = async (
   userId,
   userPrefs = {},
   overriddenIds = new Set(),
-  aiContext = null
+  aiContext = null,
+  contextLoader = null
 ) => {
   const res = await gmail.users.messages.get({
     userId: "me",
@@ -86,10 +94,48 @@ const processEmail = async (
   // spending AI budget here would be waste.
   const preserveCategory = overriddenIds.has(msg.id);
 
+  // ── Phase 11: bounded contextual refinement ──────────────────────────────
+  // Applies ONLY to weak/uncertain deterministic decisions (confidence at or
+  // below the subject-only rule band). Strong evidence, active preferences
+  // and manual overrides are never touched. Failures are contained: any
+  // resolver/policy error keeps the deterministic decision intact.
+  let contextMeta = null;
+  if (
+    contextLoader &&
+    !preserveCategory &&
+    decision.confidence <= CONTEXT_ELIGIBLE_MAX_CONFIDENCE
+  ) {
+    try {
+      const { domainEntries, threadEntries } = await contextLoader.resolve({
+        senderDomain: extractSenderDomain(from),
+        threadId: msg.threadId,
+      });
+      const combined = combineEvaluations(
+        evaluateCategoryHistory(domainEntries || []),
+        evaluateCategoryHistory(threadEntries || [])
+      );
+      if (combined.evaluation) {
+        contextMeta = {
+          type: combined.contextType,
+          sample: combined.evaluation.sample,
+          share: combined.evaluation.share,
+        };
+        decision = applyContext(decision, combined.evaluation, combined.contextType);
+      } else {
+        contextMeta = { applied: false };
+      }
+    } catch (err) {
+      contextMeta = { error: err.message };
+      logger.warn(
+        { userId, gmailMessageId: msg.id, err: err.message },
+        "Context refinement failed — deterministic result kept"
+      );
+    }
+  }
+
   // ── Phase 9: AI fallback at the explicit uncertainty boundary ────────────
-  // Only uncertain deterministic decisions are eligible; every failure mode
-  // (timeout/outage/429/malformed) resolves to null and we keep the
-  // deterministic result. Budget-capped per sync run.
+  // Runs AFTER contextual refinement so it receives the final post-context
+  // uncertainty decision. Only genuinely uncertain results reach it.
   if (
     decision.uncertain &&
     !preserveCategory &&
@@ -124,6 +170,7 @@ const processEmail = async (
     userId,
     gmailMessageId: msg.id,
     threadId: msg.threadId,
+    senderDomain: extractSenderDomain(from),
     from,
     to,
     subject,
@@ -138,6 +185,7 @@ const processEmail = async (
     isStarred:  gmailLabels.includes("STARRED") || false,
     isDeleted:  gmailLabels.includes("TRASH"),
     labels:     gmailLabels,
+    ...(contextMeta ? { contextMeta } : {}),
   };
 };
 
@@ -368,6 +416,11 @@ async function runSync({ user, syncType, jobId, onProgress }) {
   // Phase 9: per-run AI budget shared across every message in this run
   const aiContext = { remaining: MAX_AI_PER_RUN };
 
+  // Phase 11: memoizing context loader — one query per unique domain/thread
+  // for the entire batch (N+1 prevention), with aggregate run-level stats.
+  const contextLoader = createBatchedContextLoader(String(userId));
+  const contextStats = { applied: 0, insufficient: 0, errors: 0 };
+
   let saved = 0;
   let errors = 0;
   const deletedIds = [];
@@ -381,7 +434,9 @@ async function runSync({ user, syncType, jobId, onProgress }) {
     const parsedEmails = await Promise.all(
       batch.map(async ({ id }) => {
         try {
-          return await processEmail(gmail, id, userId, userPrefs, overriddenIds, aiContext);
+          return await processEmail(
+            gmail, id, userId, userPrefs, overriddenIds, aiContext, contextLoader
+          );
         } catch (err) {
           const classification = classifyGmailError(err);
 
@@ -428,6 +483,12 @@ async function runSync({ user, syncType, jobId, onProgress }) {
 
       await Email.bulkWrite(bulkOps);
       saved += validEmails.length;
+
+      // Phase 11 aggregate counters (derived from real persisted decisions)
+      for (const d of validEmails) {
+        if (d.classificationSource === "context") contextStats.applied += 1;
+        else if (d.contextMeta && d.contextMeta.applied === false) contextStats.insufficient += 1;
+      }
     }
 
     const processed = Math.min(i + BATCH_SIZE, newMessages.length);
@@ -438,6 +499,15 @@ async function runSync({ user, syncType, jobId, onProgress }) {
 
     logger.debug({ processed, total, saved, errors }, "Batch processed");
   }
+
+  // Aggregate Phase 11 context metrics for the worker summary
+  const loaderStats = contextLoader.getStats();
+  Object.assign(contextStats, {
+    queriesRun: loaderStats.queriesRun,
+    domainQueriesRun: loaderStats.domainQueriesRun,
+    threadQueriesRun: loaderStats.threadQueriesRun,
+    memoHits: loaderStats.memoHits,
+  });
 
   if (deletedIds.length > 0) {
     const deleteResult = await Email.deleteMany({ userId, gmailMessageId: { $in: deletedIds } });
@@ -484,10 +554,12 @@ async function runSync({ user, syncType, jobId, onProgress }) {
     failedMessageIds, // capped at 50 — structured identity for ops diagnosis
     partial: errors > 0,
     poisonWindow: gaveUp && errors > 0,
+    contextStats,
     hasMore: !!nextPageToken,
     hasPendingPages,
     totalSynced: user.syncState.totalSynced
   };
 }
 
-module.exports = { runSync, loadUserPreferences };
+// Exported for verification tooling — real ingestion implementation.
+module.exports = { runSync, loadUserPreferences, processEmail };

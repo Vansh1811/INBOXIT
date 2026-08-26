@@ -191,6 +191,7 @@ const worker = new Worker(
     });
 
     const elapsedMs = Date.now() - startTime;
+    const contextStats = result.contextStats || {};
     logger.info(
       {
         userId,
@@ -205,6 +206,11 @@ const worker = new Worker(
         poisonWindow: result.poisonWindow === true,
         cacheBusted: bustedKeys,
         durationMs: elapsedMs,
+        // Phase 11 aggregate contextual metrics
+        contextApplied: contextStats.applied ?? 0,
+        contextInsufficient: contextStats.insufficient ?? 0,
+        contextErrors: contextStats.errors ?? 0,
+        contextQueriesRun: contextStats.queriesRun ?? 0,
       },
       "Sync finished"
     );

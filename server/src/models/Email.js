@@ -16,6 +16,10 @@ const emailSchema = new mongoose.Schema(
     },
 
     threadId: String,
+
+    // Normalized sender domain, persisted at ingestion (Phase 11) to support
+    // indexed contextual-history lookups without regexing the raw From header.
+    senderDomain: String,
     from: String,
     to: String,
     subject: String,
@@ -40,7 +44,7 @@ const emailSchema = new mongoose.Schema(
       type: String,
       enum: [
         "unknown", "user", "preference", "rule",
-        "gmail_tab", "default", "error_fallback", "ai",
+        "gmail_tab", "default", "error_fallback", "ai", "context",
       ],
       default: "unknown",
     },
@@ -77,6 +81,14 @@ emailSchema.index({ userId: 1, category: 1, receivedAt: -1 });
 //    Covers the default inbox view ({userId, isDeleted:false, labels:"INBOX"})
 //    which previously residual-filtered over the entire mailbox.
 emailSchema.index({ userId: 1, labels: 1, receivedAt: -1 });
+
+// ✅ PHASE 11 CONTEXT LOOKUPS — bounded per-key history for uncertain emails:
+//    {userId, senderDomain} equality + receivedAt sort (domain context)
+//    {userId, threadId}     equality + receivedAt sort (thread context)
+//    Both queries are proven shapes from services/contextResolver.js; without
+//    these indexes each lookup would residual-scan the user's mailbox.
+emailSchema.index({ userId: 1, senderDomain: 1, receivedAt: -1 });
+emailSchema.index({ userId: 1, threadId: 1, receivedAt: -1 });
 // NOTE (Phase 4 audit): the former {subject:"text", from:"text"} index was
 // removed — no query ever used $text; it only added write amplification.
 // Run scripts/migrate-email-indexes.js once to drop it on existing databases.

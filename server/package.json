@@ -11,6 +11,7 @@
     "test:reliability": "node --test tests/reliability.test.js",
     "test:aifallback": "node --test tests/aiFallback.test.js",
     "test:preference": "node --test tests/preferencePolicy.test.js",
+    "test:context": "node --test tests/contextPolicy.test.js",
     "dev": "nodemon index.js",
     "start": "node index.js"
   },
