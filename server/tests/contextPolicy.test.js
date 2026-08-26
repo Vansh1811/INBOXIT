@@ -57,6 +57,16 @@ describe("evaluateCategoryHistory", () => {
     assert.strictEqual(e.sufficient, false);
     assert.strictEqual(e.sample, 3);
   });
+
+  test("unknown category strings cannot become contextual decisions", () => {
+    const e = evaluateCategoryHistory([
+      { category: "constructor" },
+      { category: "constructor" },
+      { category: "constructor" },
+    ]);
+    assert.strictEqual(e.sufficient, false);
+    assert.strictEqual(e.reason, "no_categories");
+  });
 });
 
 describe("applyContext", () => {
@@ -111,6 +121,16 @@ describe("applyContext", () => {
       assert.deepStrictEqual(out.category, decision.category);
       assert.strictEqual(out.signals.length, 0);
     }
+  });
+
+  test("malformed sufficient evaluation cannot inject an invalid category", () => {
+    const decision = { category: "uncategorized", source: "default", confidence: 0.1, uncertain: true, signals: [] };
+    const out = applyContext(decision, {
+      sufficient: true,
+      dominantCategory: "constructor",
+      share: 1,
+    }, "sender_history");
+    assert.deepStrictEqual(out, decision);
   });
 
   test("context confidence never exceeds the policy cap", () => {

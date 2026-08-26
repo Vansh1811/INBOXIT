@@ -58,7 +58,8 @@ const processEmail = async (
   userPrefs = {},
   overriddenIds = new Set(),
   aiContext = null,
-  contextLoader = null
+  contextLoader = null,
+  aiStats = null
 ) => {
   const res = await gmail.users.messages.get({
     userId: "me",
@@ -136,31 +137,45 @@ const processEmail = async (
   // ── Phase 9: AI fallback at the explicit uncertainty boundary ────────────
   // Runs AFTER contextual refinement so it receives the final post-context
   // uncertainty decision. Only genuinely uncertain results reach it.
-  if (
-    decision.uncertain &&
-    !preserveCategory &&
-    aiContext &&
-    aiContext.remaining > 0 &&
-    aiClassifier.enabled()
-  ) {
-    aiContext.remaining -= 1;
-    try {
-      const aiDecision = await aiClassifier.classifyUncertain({
-        fromDomain: extractSenderDomain(from),
-        subject,
-        snippet: msg.snippet || "",
-      });
-      if (aiDecision && !aiDecision.skipped) {
-        decision = aiDecision; // validated AI result replaces the weak one
+  if (decision.uncertain && !preserveCategory) {
+    if (aiStats) aiStats.candidates++;
+
+    if (!aiClassifier.enabled()) {
+      if (aiStats) aiStats.skippedDisabled++;
+    } else if (!aiContext || aiContext.remaining <= 0) {
+      if (aiStats) aiStats.skippedBudget++;
+    } else {
+      aiContext.remaining -= 1;
+      if (aiStats) aiStats.attempted++;
+      try {
+        const aiDecision = await aiClassifier.classifyUncertain({
+          fromDomain: extractSenderDomain(from),
+          subject,
+          snippet: msg.snippet || "",
+        });
+
+        if (aiDecision && !aiDecision.skipped) {
+          decision = aiDecision; // validated AI result replaces the weak one
+          if (aiStats) aiStats.succeeded++;
+        } else if (aiDecision && aiDecision.skipped) {
+          if (aiDecision.reason === "circuit_open") {
+            if (aiStats) aiStats.skippedCircuit++;
+          } else if (aiDecision.reason === "disabled") {
+            if (aiStats) aiStats.skippedDisabled++;
+          }
+        } else {
+          // null result (timeout, malformed, http error)
+          if (aiStats) aiStats.fallbackKept++;
+        }
+      } catch (err) {
+        // Absolute isolation: an unexpected AI-layer exception can never turn a
+        // successfully fetched email into an ingestion failure.
+        if (aiStats) aiStats.fallbackKept++;
+        logger.warn(
+          { userId, gmailMessageId: msg.id, err: err.message },
+          "AI fallback crashed — keeping deterministic classification"
+        );
       }
-      // null / {skipped} ⇒ deterministic decision survives untouched
-    } catch (err) {
-      // Absolute isolation: an unexpected AI-layer exception can never turn a
-      // successfully fetched email into an ingestion failure.
-      logger.warn(
-        { userId, gmailMessageId: msg.id, err: err.message },
-        "AI fallback crashed — keeping deterministic classification"
-      );
     }
   }
 
@@ -415,6 +430,15 @@ async function runSync({ user, syncType, jobId, onProgress }) {
 
   // Phase 9: per-run AI budget shared across every message in this run
   const aiContext = { remaining: MAX_AI_PER_RUN };
+  const aiStats = {
+    candidates: 0,
+    attempted: 0,
+    succeeded: 0,
+    fallbackKept: 0,
+    skippedBudget: 0,
+    skippedDisabled: 0,
+    skippedCircuit: 0,
+  };
 
   // Phase 11: memoizing context loader — one query per unique domain/thread
   // for the entire batch (N+1 prevention), with aggregate run-level stats.
@@ -435,7 +459,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
       batch.map(async ({ id }) => {
         try {
           return await processEmail(
-            gmail, id, userId, userPrefs, overriddenIds, aiContext, contextLoader
+            gmail, id, userId, userPrefs, overriddenIds, aiContext, contextLoader, aiStats
           );
         } catch (err) {
           const classification = classifyGmailError(err);
@@ -555,6 +579,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
     partial: errors > 0,
     poisonWindow: gaveUp && errors > 0,
     contextStats,
+    aiStats,
     hasMore: !!nextPageToken,
     hasPendingPages,
     totalSynced: user.syncState.totalSynced

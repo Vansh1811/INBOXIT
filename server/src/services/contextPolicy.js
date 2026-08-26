@@ -13,6 +13,8 @@
  */
 
 // ── Policy constants (named, single source of truth) ─────────────────────────
+const { isValidCategory } = require("./categories");
+
 const MIN_SAMPLE = 3;            // minimum history entries before context counts
 const DOMINANCE_SHARE = 0.7;     // top category must hold ≥70% of the sample
 const HISTORY_LIMIT = 10;        // max historical entries examined per key
@@ -39,7 +41,7 @@ function evaluateCategoryHistory(entries) {
   const counts = {};
   for (const entry of entries) {
     const c = entry && typeof entry.category === "string" ? entry.category : null;
-    if (c) counts[c] = (counts[c] || 0) + 1;
+    if (c && isValidCategory(c)) counts[c] = (counts[c] || 0) + 1;
   }
   if (Object.keys(counts).length === 0) {
     return { sufficient: false, reason: "no_categories", sample };
@@ -98,7 +100,11 @@ function contextSignal(evaluation, contextType) {
  * @returns new decision object (original untouched)
  */
 function applyContext(decision, evaluation, contextType) {
-  if (!evaluation || !evaluation.sufficient) return decision;
+  if (
+    !evaluation ||
+    !evaluation.sufficient ||
+    !isValidCategory(evaluation.dominantCategory)
+  ) return decision;
 
   const confidence = contextualConfidence(evaluation.share);
   const ctxSignal = contextSignal(evaluation, contextType);
