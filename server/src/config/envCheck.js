@@ -52,6 +52,12 @@ function validateEnv() {
     process.exit(1);
   }
 
+  // O-STEP8: AI fallback is an OPTIONAL feature — its absence must never
+  // block startup, and its state must be visible at boot.
+  console.log(
+    `AI classification fallback: ${process.env.GEMINI_API_KEY ? "ENABLED" : "disabled (no GEMINI_API_KEY) — deterministic-only"}`
+  );
+
   for (const { key, message } of OPTIONAL_WITH_WARNING) {
     if (!process.env[key]) {
       console.warn(`⚠️  ${key} not set — ${message}`);

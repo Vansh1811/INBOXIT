@@ -40,7 +40,7 @@ const emailSchema = new mongoose.Schema(
       type: String,
       enum: [
         "unknown", "user", "preference", "rule",
-        "gmail_tab", "default", "error_fallback",
+        "gmail_tab", "default", "error_fallback", "ai",
       ],
       default: "unknown",
     },

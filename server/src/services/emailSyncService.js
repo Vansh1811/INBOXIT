@@ -1,7 +1,8 @@
 const { getGmailClient } = require("../utils/gmailClient");
 const { extractBody, extractHeaders } = require("../utils/mimeParser");
 const { classifyDetailed, fallbackClassification } = require("./classifier");
-const { isValidCategory } = require("./categories");
+const { isValidCategory, extractSenderDomain } = require("./categories");
+const { aiClassifier } = require("./ai/aiClassifier");
 const { shouldAdvanceCursor } = require("../utils/syncPolicy");
 const { isRevokedGmailError, classifyGmailError } = require("../utils/gmailErrors");
 const Email = require("../models/Email");
@@ -21,7 +22,17 @@ const loadUserPreferences = async (userId) => {
   return Object.fromEntries(prefs.map((p) => [p.senderDomain, p.category]));
 };
 
-const processEmail = async (gmail, messageId, userId, userPrefs = {}, overriddenIds = new Set()) => {
+/** AI budget per sync run — bounds cost even for huge uncertain batches. */
+const MAX_AI_PER_RUN = 10;
+
+const processEmail = async (
+  gmail,
+  messageId,
+  userId,
+  userPrefs = {},
+  overriddenIds = new Set(),
+  aiContext = null
+) => {
   const res = await gmail.users.messages.get({
     userId: "me",
     id: messageId,
@@ -52,8 +63,42 @@ const processEmail = async (gmail, messageId, userId, userPrefs = {}, overridden
     decision = fallbackClassification(err.message);
   }
 
-  // Never clobber a category the user set manually
+  // Never clobber a category the user set manually — user intent also means
+  // spending AI budget here would be waste.
   const preserveCategory = overriddenIds.has(msg.id);
+
+  // ── Phase 9: AI fallback at the explicit uncertainty boundary ────────────
+  // Only uncertain deterministic decisions are eligible; every failure mode
+  // (timeout/outage/429/malformed) resolves to null and we keep the
+  // deterministic result. Budget-capped per sync run.
+  if (
+    decision.uncertain &&
+    !preserveCategory &&
+    aiContext &&
+    aiContext.remaining > 0 &&
+    aiClassifier.enabled()
+  ) {
+    aiContext.remaining -= 1;
+    try {
+      const aiDecision = await aiClassifier.classifyUncertain({
+        fromDomain: extractSenderDomain(from),
+        subject,
+        snippet: msg.snippet || "",
+      });
+      if (aiDecision && !aiDecision.skipped) {
+        decision = aiDecision; // validated AI result replaces the weak one
+      }
+      // null / {skipped} ⇒ deterministic decision survives untouched
+    } catch (err) {
+      // Absolute isolation: an unexpected AI-layer exception can never turn a
+      // successfully fetched email into an ingestion failure.
+      logger.warn(
+        { userId, gmailMessageId: msg.id, err: err.message },
+        "AI fallback crashed — keeping deterministic classification"
+      );
+    }
+  }
+
   const classificationSource = preserveCategory ? "user" : decision.source;
 
   return {
@@ -301,6 +346,9 @@ async function runSync({ user, syncType, jobId, onProgress }) {
     getOverriddenMessageIds(userId, allGmailIds),
   ]);
 
+  // Phase 9: per-run AI budget shared across every message in this run
+  const aiContext = { remaining: MAX_AI_PER_RUN };
+
   let saved = 0;
   let errors = 0;
   const deletedIds = [];
@@ -314,7 +362,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
     const parsedEmails = await Promise.all(
       batch.map(async ({ id }) => {
         try {
-          return await processEmail(gmail, id, userId, userPrefs, overriddenIds);
+          return await processEmail(gmail, id, userId, userPrefs, overriddenIds, aiContext);
         } catch (err) {
           const classification = classifyGmailError(err);
 
