@@ -6,6 +6,8 @@ const {
   restrictRollbackToFailedGmailIds,
   resolveRollbackIds,
 } = require("../utils/actionRollback");
+const { scanAndDelete } = require("../utils/cacheBust");
+const { redisClient } = require("../config/redis");
 const { actionQueue } = require("./actionQueue");
 const logger = require("../utils/logger").child({ component: "action-worker" });
 
@@ -28,16 +30,17 @@ const connection = {
 async function reconcileLocalAfterFailure(data) {
   if (!data) {
     logger.warn("Rollback skipped — no payload");
-    return;
+    return { reverted: 0 };
   }
   // Fail safe: without a userId the queries below would silently match
   // nothing (Mongoose treats undefined as a null-constraint). Surface it.
   if (!data.userId) {
     logger.warn({ action: data.action }, "Rollback skipped — payload has no userId");
-    return;
+    return { reverted: 0 };
   }
 
   const { archiveIds, notDeletedIds } = resolveRollbackIds(data);
+  let reverted = 0;
 
   if (notDeletedIds.length) {
     const res = await Email.updateMany(
@@ -50,6 +53,7 @@ async function reconcileLocalAfterFailure(data) {
         "Delete rollback matched fewer docs than expected"
       );
     }
+    reverted += res.modifiedCount;
     logger.info({ count: res.matchedCount }, "Reverted local delete after final failure");
   }
 
@@ -64,8 +68,20 @@ async function reconcileLocalAfterFailure(data) {
         "Archive rollback matched fewer docs than expected"
       );
     }
+    reverted += res.modifiedCount;
     logger.info({ count: res.matchedCount }, "Reverted local archive after final failure");
   }
+
+  // Phase 6 / I2: the optimistic rows may still sit in cached folder
+  // listings (TTL up to 900 s). After Mongo is restored, bust that user's
+  // folder cache so the next read reflects reality immediately.
+  if (reverted > 0) {
+    await scanAndDelete(redisClient, `user:${data.userId}:folder:*`).catch((e) =>
+      logger.warn({ err: e.message }, "Post-rollback cache bust failed")
+    );
+  }
+
+  return { reverted };
 }
 
 const actionWorker = new Worker(
