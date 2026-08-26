@@ -3,9 +3,12 @@
 import { cn } from "@/lib/utils/cn";
 import { ChevronLeft, MailOpen, Mail, Star, Archive, Trash2 } from "lucide-react";
 
+import { CategoryMeta } from "@/lib/utils/email";
+import { EmailDetailData } from "./EmailDetail";
+
 interface EmailDetailToolbarProps {
-  email: any;
-  cat: any;
+  email: EmailDetailData;
+  cat: CategoryMeta;
   onClose: () => void;
   toggle: (field: "isStarred" | "isRead") => void;
   handleArchive: () => void;

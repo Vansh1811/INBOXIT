@@ -11,7 +11,7 @@ import { Loader2, Archive, Trash2, ArrowLeft } from "lucide-react";
 import { useToast } from "@/lib/contexts/ToastContext";
 import { useActionContext } from "@/lib/contexts/ActionContext";
 
-interface EmailDetailData {
+export interface EmailDetailData {
   _id: string;
   from: string;
   to?: string;
@@ -23,6 +23,8 @@ interface EmailDetailData {
   isRead: boolean;
   isStarred: boolean;
   category: string;
+  classificationSource?: string;
+  userOverride?: boolean;
 }
 
 interface EmailDetailProps {

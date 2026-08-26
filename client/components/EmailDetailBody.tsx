@@ -1,8 +1,11 @@
 "use client";
 
+import { CategoryMeta } from "@/lib/utils/email";
+import { EmailDetailData } from "./EmailDetail";
+
 interface EmailDetailBodyProps {
-  email: any;
-  cat: any;
+  email: EmailDetailData;
+  cat: CategoryMeta;
   hasHtml: boolean;
   safeHtml: string;
 }

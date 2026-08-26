@@ -11,6 +11,10 @@ export interface Email {
   isRead: boolean;
   isStarred: boolean;
   category: string;
+  /** Phase 8 provenance: which layer produced the category. */
+  classificationSource?: string;
+  /** True when the user manually assigned this category. */
+  userOverride?: boolean;
 }
 
 /** Phase 4 keyset-pagination contract. */

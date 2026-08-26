@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useEmails } from "@/lib/hooks/useEmails";
+import { useEmails, Email } from "@/lib/hooks/useEmails";
 import { useSocketContext } from "@/lib/contexts/SocketContext";
 import { useToast } from "@/lib/contexts/ToastContext";
 import { useSyncContext } from "@/lib/contexts/SyncContext";
@@ -163,7 +163,7 @@ export default function EmailList({ folder }: EmailListProps) {
       // Cmd/Ctrl + A
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
         e.preventDefault();
-        setSelectedIds(new Set(emails.map((em: any) => em._id)));
+        setSelectedIds(new Set(emails.map((em: Email) => em._id)));
         return;
       }
 
@@ -185,14 +185,14 @@ export default function EmailList({ folder }: EmailListProps) {
       }
 
       // List view shortcuts
-      const currentIdx = emails.findIndex((em: any) => em._id === focusedEmailId);
+      const currentIdx = emails.findIndex((em: Email) => em._id === focusedEmailId);
       
       switch (e.key) {
         case 'j':
         case 'ArrowDown': {
           e.preventDefault();
           const nextId = getNextFocusId(currentIdx);
-          if (nextId && emails.findIndex((e: any) => e._id === nextId) > currentIdx) {
+          if (nextId && emails.findIndex((e: Email) => e._id === nextId) > currentIdx) {
             setFocusedEmailId(nextId);
             document.getElementById(`email-row-${nextId}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
           }
@@ -290,7 +290,7 @@ export default function EmailList({ folder }: EmailListProps) {
     
     // update focus if focused item is archived
     if (focusedEmailId && ids.includes(focusedEmailId)) {
-      const currentIdx = emails.findIndex((em: any) => em._id === focusedEmailId);
+      const currentIdx = emails.findIndex((em: Email) => em._id === focusedEmailId);
       const nextFocus = getNextFocusId(currentIdx, new Set(ids));
       if (nextFocus) setFocusedEmailId(nextFocus);
     }
@@ -384,7 +384,7 @@ export default function EmailList({ folder }: EmailListProps) {
               active={Object.keys(incomingSyncs).length > 0} 
               count={Object.keys(incomingSyncs).length} 
             />
-            {emails.map((email: any, idx: number) => (
+            {emails.map((email: Email, idx: number) => (
               <EmailRow
                 key={email._id}
                 id={`email-row-${email._id}`}
@@ -411,7 +411,7 @@ export default function EmailList({ folder }: EmailListProps) {
           setSelectedIds(new Set());
           
           if (focusedEmailId && ids.includes(focusedEmailId)) {
-            const currentIdx = emails.findIndex((em: any) => em._id === focusedEmailId);
+            const currentIdx = emails.findIndex((em: Email) => em._id === focusedEmailId);
             const nextFocus = getNextFocusId(currentIdx, new Set(ids));
             if (nextFocus) setFocusedEmailId(nextFocus);
           }

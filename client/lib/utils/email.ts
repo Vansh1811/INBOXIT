@@ -23,7 +23,7 @@ export const CATEGORIES = [
 
 export type Category = (typeof CATEGORIES)[number];
 
-interface CategoryMeta {
+export interface CategoryMeta {
   label: string;
   icon: string;
 }

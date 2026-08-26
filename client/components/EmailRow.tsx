@@ -2,10 +2,11 @@ import { memo } from "react";
 import { CAT, senderInitial, senderName, formatTime } from "@/lib/utils/email";
 import { cn } from "@/lib/utils/cn";
 import { Star } from "lucide-react";
+import { Email } from "@/lib/hooks/useEmails";
 
 interface EmailRowProps {
   id: string;
-  email: any;
+  email: Email;
   idx: number;
   isSelected: boolean;
   isFocused: boolean;
@@ -23,7 +24,7 @@ export default memo(function EmailRow({ id, email, idx, isSelected, isFocused, p
       aria-selected={isSelected}
       tabIndex={isFocused ? 0 : -1}
       className={cn(
-        "group grid grid-cols-[16px_220px_minmax(0,1fr)_120px] items-center gap-4 px-6 w-full text-left bg-transparent border-b cursor-pointer relative transition-all duration-150 ease-out outline-none overflow-hidden",
+        "group grid grid-cols-[16px_220px_minmax(0,1fr)_auto_120px] items-center gap-4 px-6 w-full text-left bg-transparent border-b cursor-pointer relative transition-all duration-150 ease-out outline-none overflow-hidden",
         pendingAction === "archive" ? "-translate-x-full opacity-0 h-0 min-h-0 py-0 border-transparent mb-0" :
         pendingAction === "delete" ? "scale-95 opacity-0 h-0 min-h-0 py-0 border-transparent mb-0" :
         "h-[48px] border-[var(--border-subtle)] hover:bg-[var(--hover)]",
@@ -74,8 +75,17 @@ export default memo(function EmailRow({ id, email, idx, isSelected, isFocused, p
         </span>
       </div>
 
+      {/* Category Chip */}
+      <div className="flex items-center justify-end shrink-0">
+        {email.category !== "uncategorized" && cat && (
+          <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+            {cat.label}
+          </span>
+        )}
+      </div>
+
       {/* 5. Time (mono) */}
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end shrink-0">
         <span
           className={cn(
             "font-mono text-[12px] whitespace-nowrap text-right",
