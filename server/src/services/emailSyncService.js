@@ -1,7 +1,7 @@
 const { getGmailClient } = require("../utils/gmailClient");
 const { extractBody, extractHeaders } = require("../utils/mimeParser");
-const { classify, fromGmailTabs } = require("./classifier");
-const { UNCATEGORIZED } = require("./categories");
+const { classifyDetailed, fallbackClassification } = require("./classifier");
+const { isValidCategory } = require("./categories");
 const { shouldAdvanceCursor } = require("../utils/syncPolicy");
 const { isRevokedGmailError, classifyGmailError } = require("../utils/gmailErrors");
 const Email = require("../models/Email");
@@ -34,16 +34,27 @@ const processEmail = async (gmail, messageId, userId, userPrefs = {}, overridden
 
   const gmailLabels = msg.labelIds || [];
 
-  // 1. Rule-based / learned-preference classification (single winner)
-  let category = classify(from, subject, userPrefs);
-
-  // 2. Fall back to Gmail's own tab when our rules found nothing
-  if (category === UNCATEGORIZED) {
-    category = fromGmailTabs(gmailLabels) || UNCATEGORIZED;
+  // ── Classification (isolated from sync reliability — Phase 8) ────────────
+  // A classifier failure must never drop the message or poison the sync run:
+  // we ingest with an explicit low-confidence fallback and mark it uncertain
+  // so the future AI fallback layer can revisit it.
+  let decision;
+  try {
+    decision = classifyDetailed(from, subject, userPrefs, gmailLabels);
+    if (!decision || !isValidCategory(decision.category)) {
+      throw new Error(`classifier returned invalid category: ${decision && decision.category}`);
+    }
+  } catch (err) {
+    logger.warn(
+      { userId, gmailMessageId: msg.id, err: err.message },
+      "Classifier failed — using explicit fallback classification"
+    );
+    decision = fallbackClassification(err.message);
   }
 
   // Never clobber a category the user set manually
   const preserveCategory = overriddenIds.has(msg.id);
+  const classificationSource = preserveCategory ? "user" : decision.source;
 
   return {
     userId,
@@ -56,7 +67,9 @@ const processEmail = async (gmail, messageId, userId, userPrefs = {}, overridden
     bodyHtml,
     bodyText,
     receivedAt: new Date(parseInt(msg.internalDate)),
-    ...(preserveCategory ? {} : { category }),
+    ...(preserveCategory
+      ? { classificationSource }
+      : { category: decision.category, classificationSource }),
     isRead:    !gmailLabels.includes("UNREAD"),
     isStarred:  gmailLabels.includes("STARRED") || false,
     isDeleted:  gmailLabels.includes("TRASH"),

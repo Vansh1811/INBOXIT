@@ -1,11 +1,18 @@
 // src/services/classifier.js
 
 /**
- * Rule-based email classifier — SINGLE canonical category output.
+ * Rule-based email classifier with an explicit, inspectable decision layer.
  *
- * Rules are evaluated in priority order; the FIRST match wins and its
- * `category` value is returned. This matches InboxIt's product model:
- * each email lives in exactly one folder.
+ * Canonical ordering (highest precedence first):
+ *   1. user_preference   — learned from the user's own corrections
+ *   2. rule              — first RULES[] match by ascending priority
+ *   3. gmail_tab         — Google's native CATEGORY_* mapping
+ *   4. default           — uncategorized
+ *
+ * `classify()` preserves the historical string-only contract.
+ * `classifyDetailed()` returns the full internal decision contract
+ * (category + source + heuristic confidence + bounded signals) that the
+ * future AI fallback layer will consume.
  *
  * Extend by adding entries to RULES (lower priority number = higher
  * precedence). Category values MUST exist in services/categories.js.
@@ -17,6 +24,26 @@ const {
   isValidCategory,
   extractSenderDomain,
 } = require("./categories");
+
+/**
+ * Deterministic heuristic bands — NOT statistically calibrated probabilities.
+ * They encode "how strong is this class of evidence" so the decision layer
+ * (and the future AI fallback trigger) can reason about uncertainty.
+ */
+const CONFIDENCE = {
+  USER_PREFERENCE: 0.95,        // explicit human intent
+  RULE_SENDER_AND_SUBJECT: 0.9, // two independent signals agree
+  RULE_SENDER_ONLY: 0.85,       // strong vendor/domain identity
+  RULE_SUBJECT_ONLY: 0.7,       // keyword collision risk
+  GMAIL_TAB: 0.6,               // Google's own coarse classification
+  DEFAULT: 0.1,                 // no meaningful evidence
+};
+
+/** Results with confidence below this are marked uncertain (AI-trigger candidates). */
+const UNCERTAIN_BELOW = 0.75;
+
+/** Hard cap on explainability signals attached to one result. */
+const MAX_SIGNALS = 8;
 
 const RULES = [
   // 1) JOBS
@@ -108,11 +135,32 @@ const RULES = [
   },
 ];
 
-/**
- * Resolve the Gmail native tab → canonical category, if any.
- * @param {string[]} gmailLabels
- * @returns {string|null}
- */
+/** Evaluate every rule; returns ordered candidates with match provenance. */
+function evaluateRules(fromLower, subjectLower) {
+  const candidates = [];
+  for (const rule of RULES) {
+    const matchedBy = [];
+    if (rule.from.test(fromLower)) matchedBy.push("from");
+    if (rule.subject.test(subjectLower)) matchedBy.push("subject");
+    if (matchedBy.length > 0) {
+      candidates.push({
+        category: rule.category,
+        priority: rule.priority,
+        matchedBy,
+      });
+    }
+  }
+  return candidates.sort((a, b) => a.priority - b.priority);
+}
+
+function confidenceForRuleMatch(matchedBy) {
+  if (matchedBy.includes("from") && matchedBy.includes("subject"))
+    return CONFIDENCE.RULE_SENDER_AND_SUBJECT;
+  if (matchedBy.includes("from")) return CONFIDENCE.RULE_SENDER_ONLY;
+  return CONFIDENCE.RULE_SUBJECT_ONLY;
+}
+
+/** Resolve the Gmail native tab → canonical category, if any. */
 function fromGmailTabs(gmailLabels = []) {
   for (const label of gmailLabels) {
     const mapped = GMAIL_TAB_MAP[label];
@@ -122,16 +170,120 @@ function fromGmailTabs(gmailLabels = []) {
 }
 
 /**
- * Classify an email into exactly ONE canonical category.
+ * Full internal decision contract (Phase 8).
  *
- * Precedence:
- *   1. userPrefs[senderDomain]   — learned from the user's own corrections
- *   2. first matching rule       — by ascending priority number
- *   3. Gmail tab mapping         — applied by caller via fromGmailTabs()
+ * @param {string} from      raw From header (untrusted input — coerced)
+ * @param {string} subject   raw subject   (untrusted input — coerced)
+ * @param {Object<string,string>} [userPrefs]  senderDomain → canonical category
+ * @param {string[]}         [gmailLabels]       raw Gmail label ids
+ * @returns {{
+ *   category: string,
+ *   source: "preference"|"rule"|"gmail_tab"|"default"|"error_fallback",
+ *   confidence: number,
+ *   uncertain: boolean,
+ *   signals: Array<{type:string, value:string, weight:number, by?:string[]}>,
+ * }} decision — `signals` is bounded and contains NO message content.
+ */
+function classifyDetailed(from = "", subject = "", userPrefs = {}, gmailLabels = []) {
+  const f = String(from).toLowerCase();
+  const s = String(subject).toLowerCase();
+  const domain = extractSenderDomain(from);
+  const signals = [];
+
+  // 1) Learned user preference — strongest possible evidence
+  if (
+    domain &&
+    userPrefs &&
+    Object.prototype.hasOwnProperty.call(userPrefs, domain) &&
+    isValidCategory(userPrefs[domain])
+  ) {
+    signals.push({
+      type: "user_preference",
+      value: domain,
+      weight: CONFIDENCE.USER_PREFERENCE,
+    });
+    return {
+      category: userPrefs[domain],
+      source: "preference",
+      confidence: CONFIDENCE.USER_PREFERENCE,
+      uncertain: false,
+      signals: signals.slice(0, MAX_SIGNALS),
+    };
+  }
+
+  // 2) Rule engine — first match by priority wins; record conflicts
+  const candidates = evaluateRules(f, s);
+  if (candidates.length > 0) {
+    const best = candidates[0];
+    const confidence = confidenceForRuleMatch(best.matchedBy);
+
+    signals.push({
+      type: "rule",
+      value: best.category,
+      weight: confidence,
+      by: best.matchedBy,
+    });
+    for (const other of candidates.slice(1, 4)) {
+      signals.push({ type: "conflict", value: other.category, weight: null });
+    }
+
+    return {
+      category: best.category,
+      source: "rule",
+      confidence,
+      uncertain: confidence < UNCERTAIN_BELOW,
+      signals: signals.slice(0, MAX_SIGNALS),
+    };
+  }
+
+  // 3) Gmail's own tab classification — weaker, but real evidence
+  for (const label of gmailLabels || []) {
+    const mapped = GMAIL_TAB_MAP[label];
+    if (mapped) {
+      signals.push({
+        type: "gmail_tab",
+        value: label,
+        weight: CONFIDENCE.GMAIL_TAB,
+      });
+      return {
+        category: mapped,
+        source: "gmail_tab",
+        confidence: CONFIDENCE.GMAIL_TAB,
+        uncertain: false,
+        signals: signals.slice(0, MAX_SIGNALS),
+      };
+    }
+  }
+
+  // 4) Default — explicitly LOW confidence / uncertain
+  return {
+    category: UNCATEGORIZED,
+    source: "default",
+    confidence: CONFIDENCE.DEFAULT,
+    uncertain: true,
+    signals,
+  };
+}
+
+/**
+ * Explicit fallback contract for classification failures.
  *
- * @param {string} from      raw From header
- * @param {string} subject
- * @param {Object<string,string>} userPrefs  map of senderDomain → category
+ * Used by the sync pipeline when the classifier itself throws: ingestion must
+ * continue (with an honest low-confidence placeholder) rather than dropping
+ * the message. Marked uncertain so the future AI layer can revisit it.
+ */
+function fallbackClassification(reason) {
+  return {
+    category: UNCATEGORIZED,
+    source: "error_fallback",
+    confidence: 0,
+    uncertain: true,
+    signals: [{ type: "error_fallback", value: String(reason || "unknown").slice(0, 120), weight: 0 }],
+  };
+}
+
+/**
+ * Backward-compatible string-only API.
  * @returns {string} canonical category
  */
 const classify = (from = "", subject = "", userPrefs = {}) => {
@@ -151,4 +303,14 @@ const classify = (from = "", subject = "", userPrefs = {}) => {
   return rule ? rule.category : UNCATEGORIZED;
 };
 
-module.exports = { classify, fromGmailTabs, RULES };
+module.exports = {
+  classify,
+  classifyDetailed,
+  fallbackClassification,
+  fromGmailTabs,
+  evaluateRules,
+  RULES,
+  CONFIDENCE,
+  UNCERTAIN_BELOW,
+  MAX_SIGNALS,
+};

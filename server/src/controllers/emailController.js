@@ -236,6 +236,7 @@ const updateEmail = async (req, res) => {
       }
       // A manual move always wins over future automatic classification
       update.userOverride = true;
+      update.classificationSource = "user";
     }
 
     if (Object.keys(update).length === 0) {
@@ -275,6 +276,7 @@ const updateEmail = async (req, res) => {
       isRead: email.isRead,
       isStarred: email.isStarred,
       category: email.category,
+      classificationSource: email.classificationSource,
       userOverride: email.userOverride,
     });
   } catch (err) {

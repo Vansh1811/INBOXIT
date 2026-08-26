@@ -33,6 +33,18 @@ const emailSchema = new mongoose.Schema(
       default: "uncategorized",
     },
 
+    // Phase 8 provenance: which layer produced the current category.
+    // "user" (manual move) | "rule" | "gmail_tab" | "preference" |
+    // "default" | "error_fallback". Legacy docs read "unknown".
+    classificationSource: {
+      type: String,
+      enum: [
+        "unknown", "user", "preference", "rule",
+        "gmail_tab", "default", "error_fallback",
+      ],
+      default: "unknown",
+    },
+
     // True once the user manually assigns a category; the sync pipeline
     // never overwrites the category of an overridden email.
     userOverride: { type: Boolean, default: false },
