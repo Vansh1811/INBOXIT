@@ -108,7 +108,7 @@ function check(name, cond, detail = "") {
       const snapIds = [];
       for (const t of [x, y, z]) {
         const pre = await Email.findOneAndUpdate(
-          { _id: t.id, isDeleted: false }, { isDeleted: true }, { new: false }
+          { _id: t.id, isDeleted: false }, { isDeleted: true }
         ).lean();
         snapIds.push(pre._id.toString());
       }
@@ -143,7 +143,7 @@ function check(name, cond, detail = "") {
       const snapIds = [];
       for (const t of [p, q1, r, s]) {
         const pre = await Email.findOneAndUpdate(
-          { _id: t.id, isDeleted: false }, { isDeleted: true }, { new: false }
+          { _id: t.id, isDeleted: false }, { isDeleted: true }
         ).lean();
         snapIds.push(pre._id.toString());
       }
@@ -205,7 +205,7 @@ function check(name, cond, detail = "") {
 
       // Production filter excludes already-deleted docs from the snapshot:
       const pre = await Email.findOneAndUpdate(
-        { _id: live.id, isDeleted: false }, { isDeleted: true }, { new: false }
+        { _id: live.id, isDeleted: false }, { isDeleted: true }
       ).lean();
       // Production payloads always carry userId — mirror that exactly:
       const snapshot = {

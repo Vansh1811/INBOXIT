@@ -24,7 +24,9 @@ const OPTIONAL_WITH_WARNING = [
     key: "PUBSUB_OIDC_AUDIENCE",
     message:
       "Gmail Pub/Sub webhook verification is DISABLED until this is set — " +
-      "push notifications will be rejected. Set it to the OIDC audience " +
+      "push notifications will be rejected. The 60s periodic polling " +
+      "fallback remains active, so mail will still arrive (with up to a " +
+      "minute of extra latency). To enable push, set this to the OIDC " +
       "configured on your Google Cloud Pub/Sub push subscription.",
   },
 ];

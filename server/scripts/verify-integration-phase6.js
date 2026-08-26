@@ -192,7 +192,7 @@ async function call(handler, userId, { query = {}, params = {}, body = {} } = {}
     const snapIds = [];
     for (const t of [okA, okB, failC]) {
       const pre = await Email.findOneAndUpdate(
-        { _id: t.id, isDeleted: false }, { isDeleted: true }, { new: false }
+        { _id: t.id, isDeleted: false }, { isDeleted: true }
       ).lean();
       snapIds.push(pre._id.toString());
     }

@@ -249,7 +249,7 @@ const updateEmail = async (req, res) => {
         isDeleted: false,
       },
       update,
-      { new: true, runValidators: true }
+      { returnDocument: "after", runValidators: true }
     );
 
     if (!email) {
@@ -288,7 +288,7 @@ const updateEmail = async (req, res) => {
 
 const deleteEmail = async (req, res) => {
   try {
-    // Get ORIGINAL document by omitting new: true
+    // Get ORIGINAL document by omitting returnDocument (defaults to before)
     const email = await Email.findOneAndUpdate(
       {
         _id: req.params.id,
@@ -321,7 +321,7 @@ const deleteEmail = async (req, res) => {
 
 const archiveEmail = async (req, res) => {
   try {
-    // Get ORIGINAL document by omitting new: true
+    // Get ORIGINAL document by omitting returnDocument (defaults to before)
     const email = await Email.findOneAndUpdate(
       {
         _id: req.params.id,

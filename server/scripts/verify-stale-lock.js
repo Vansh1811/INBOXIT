@@ -42,7 +42,7 @@ async function run() {
           "syncState.activeJobId": jobId,
         },
       },
-      { new: true }
+      { returnDocument: "after" }
     );
 
   const releaseIfOwner = (userId, jobId) =>

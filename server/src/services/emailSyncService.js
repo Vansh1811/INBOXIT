@@ -3,7 +3,7 @@ const { extractBody, extractHeaders } = require("../utils/mimeParser");
 const { classify, fromGmailTabs } = require("./classifier");
 const { UNCATEGORIZED } = require("./categories");
 const { shouldAdvanceCursor } = require("../utils/syncPolicy");
-const { isRevokedGmailError } = require("../utils/gmailErrors");
+const { isRevokedGmailError, classifyGmailError } = require("../utils/gmailErrors");
 const Email = require("../models/Email");
 const User = require("../models/User");
 const CategoryPreference = require("../models/CategoryPreference");
@@ -197,6 +197,8 @@ async function persistRunResults(userId, jobId, fields) {
  */
 async function runSync({ user, syncType, jobId, onProgress }) {
   const userId = user._id;
+  // Run-scoped correlation: every per-message event carries this userId
+  const runLog = logger.child({ userId: String(userId) });
 
   try {
     await refreshTokenIfNeeded(user);
@@ -289,6 +291,9 @@ async function runSync({ user, syncType, jobId, onProgress }) {
   let saved = 0;
   let errors = 0;
   const deletedIds = [];
+  // O-B1: structured per-failure identity so `errors=N` is diagnosable
+  // without exposing message content. Capped to bound log cardinality.
+  const failedMessageIds = [];
 
   for (let i = 0; i < newMessages.length; i += BATCH_SIZE) {
     const batch = newMessages.slice(i, i + BATCH_SIZE);
@@ -298,14 +303,34 @@ async function runSync({ user, syncType, jobId, onProgress }) {
         try {
           return await processEmail(gmail, id, userId, userPrefs, overriddenIds);
         } catch (err) {
-          errors++;
-          if (err?.response?.status === 404) {
-             // permanently deleted in Gmail - handle gracefully
-             deletedIds.push(id);
-          } else {
-             logger.error(`[EmailSyncService] ❌ msg ${id}:`, err.response?.data?.error?.message || err.message);
+          const classification = classifyGmailError(err);
+
+          if (classification === "missing") {
+            // 404/410: the message was deleted upstream. This is a HANDLED
+            // event, not an ingestion error — it must not trigger cursor
+            // retention or count against `errors`.
+            deletedIds.push(id);
+            runLog.info(
+              { gmailMessageId: id, classification },
+              "Message deleted upstream — removing local copy"
+            );
+            return null;
           }
-          return null; // Partial failure
+
+          errors++;
+          if (failedMessageIds.length < 50) failedMessageIds.push(id);
+
+          runLog.error(
+            {
+              gmailMessageId: id,
+              errorCode: err?.response?.status ?? null,
+              classification,
+              retryable: classification === "transient" || classification === "rate_limited",
+              err: err?.response?.data?.error?.message || err.message,
+            },
+            "Message ingestion failed"
+          );
+          return null; // Partial failure — cursor policy decides retry
         }
       })
     );
@@ -375,6 +400,8 @@ async function runSync({ user, syncType, jobId, onProgress }) {
     saved,
     skipped,
     errors,
+    deletedCount: deletedIds.length,
+    failedMessageIds, // capped at 50 — structured identity for ops diagnosis
     partial: errors > 0,
     poisonWindow: gaveUp && errors > 0,
     hasMore: !!nextPageToken,

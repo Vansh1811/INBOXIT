@@ -109,7 +109,7 @@ function check(name, cond, detail = "") {
     User.findOneAndUpdate(
       { _id: userId },
       { $set: { "syncState.isSyncing": true, "syncState.activeJobId": "verify-job" } },
-      { new: true }
+      { returnDocument: "after" }
     );
 
   try {

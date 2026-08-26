@@ -111,7 +111,7 @@ async function run() {
       const mutated = await Email.findOneAndUpdate(
         { _id: insertedId, isDeleted: false },
         { isDeleted: true },
-        { new: false } // production uses pre-update doc for the snapshot
+        // production uses pre-update doc for the snapshot
       );
       assert.ok(mutated, "optimistic mutation must match a non-deleted doc");
       assert.strictEqual(mutated.isDeleted, false, "snapshot source must be the PRE-action doc");

@@ -17,7 +17,7 @@ async function main() {
   const updatedUser = await User.findByIdAndUpdate(
     userId,
     { $set: { "syncState.idlePolls": 0 } },
-    { new: true }
+    { returnDocument: "after" }
   );
   
   console.log("idlePolls after manual trigger:", updatedUser.syncState.idlePolls);

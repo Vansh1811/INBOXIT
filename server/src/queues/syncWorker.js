@@ -54,7 +54,7 @@ const worker = new Worker(
           "syncState.activeJobId": job.id || null
         }
       },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     if (!user) {
@@ -116,7 +116,17 @@ const worker = new Worker(
       throw err;
     }
 
-    const { isEmpty, saved, skipped, errors, hasMore, hasPendingPages, totalSynced } = result;
+    const {
+      isEmpty,
+      saved,
+      skipped,
+      errors,
+      deletedCount,
+      failedMessageIds = [],
+      hasMore,
+      hasPendingPages,
+      totalSynced,
+    } = result;
 
     if (isEmpty) {
       // ── IDLE BACKOFF ──────────────────────────────────────────────────
@@ -180,23 +190,38 @@ const worker = new Worker(
       return 0;
     });
 
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const elapsedMs = Date.now() - startTime;
     logger.info(
-      `[Worker] ✅ Done in ${elapsed}s — saved=${saved}, skipped=${skipped}, errors=${errors}, hasMore=${hasMore}, cacheBusted=${bustedKeys}${errors > 0 ? `, cursorRetained=${!result.poisonWindow}` : ""}`
+      {
+        userId,
+        saved,
+        skipped,
+        errors,
+        deletedCount,
+        // O-B1: capped identity list so errors=N is diagnosable safely
+        failedMessageIds: failedMessageIds.slice(0, 20),
+        hasMore,
+        cursorRetained: errors > 0 && !result.poisonWindow,
+        poisonWindow: result.poisonWindow === true,
+        cacheBusted: bustedKeys,
+        durationMs: elapsedMs,
+      },
+      "Sync finished"
     );
 
     safeEmit(userId, "sync:complete", { totalSynced, hasMore });
 
-    // O-M5/O-H1: surface partial ingestion instead of silently swallowing it
-    if (errors > 0) {
-      safeEmit(userId, "sync:partial", {
-        errors,
-        poisonWindow: result.poisonWindow === true,
-        message: result.poisonWindow === true
-          ? `${errors} email(s) could not be loaded after repeated attempts.`
-          : `${errors} email(s) could not be loaded — will retry automatically.`,
-      });
-    }
+      // O-M5/O-H1: surface partial ingestion instead of silently swallowing it
+      if (errors > 0) {
+        safeEmit(userId, "sync:partial", {
+          errors,
+          deletedCount,
+          poisonWindow: result.poisonWindow === true,
+          message: result.poisonWindow === true
+            ? `${errors} email(s) could not be loaded after repeated attempts.`
+            : `${errors} email(s) could not be loaded — will retry automatically.`,
+        });
+      }
 
     // 5. THE LAZY LOAD HANDOFF
     if (hasMore || hasPendingPages) {

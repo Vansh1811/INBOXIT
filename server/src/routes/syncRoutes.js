@@ -30,7 +30,7 @@ router.post("/", protect, refreshGmailToken, syncLimiter, async (req, res) => {
   const updatedUser = await User.findByIdAndUpdate(
     req.user.id,
     { $set: { "syncState.idlePolls": 0 } },
-    { new: true }
+    { returnDocument: "after" }
   );
 
   if (!updatedUser) {
