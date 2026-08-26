@@ -9,6 +9,8 @@ const {
 } = require("./syncQueue");
 const { scanAndDelete } = require("../utils/cacheBust");
 const { runSync } = require("../services/emailSyncService");
+const { aiClassifier } = require("../services/ai/aiClassifier");
+const { buildAiSummary } = require("../services/ai/aiTelemetry");
 const logger = require("../utils/logger").child({ component: "sync-worker" });
 
 const bullConnection = {
@@ -192,6 +194,13 @@ const worker = new Worker(
 
     const elapsedMs = Date.now() - startTime;
     const contextStats = result.contextStats || {};
+    let aiProcessStatus = {};
+    try {
+      aiProcessStatus = aiClassifier.getOperationalStatus();
+    } catch {
+      // Telemetry must never affect a completed sync.
+    }
+    const aiSummary = buildAiSummary(result.aiStats, aiProcessStatus);
     logger.info(
       {
         userId,
@@ -211,6 +220,7 @@ const worker = new Worker(
         contextInsufficient: contextStats.insufficient ?? 0,
         contextErrors: contextStats.errors ?? 0,
         contextQueriesRun: contextStats.queriesRun ?? 0,
+        ai: aiSummary,
       },
       "Sync finished"
     );

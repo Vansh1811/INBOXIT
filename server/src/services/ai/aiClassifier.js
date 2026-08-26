@@ -31,8 +31,10 @@ const CONF_DEFAULT = 0.6;
 function createAIClassifierService({
   /** async ({apiKey, systemPrompt, userPrompt, timeoutMs}) => raw text */
   provider,
+  /** non-secret operational label for the configured provider */
+  providerName = "unknown",
   /** () => string|undefined — API key, read lazily per call */
-  apiKeyGetter,
+  apiKeyGetter = () => undefined,
   /** () => boolean — feature flag */
   isEnabled = () => Boolean(apiKeyGetter()),
   model,
@@ -40,18 +42,24 @@ function createAIClassifierService({
   let consecutiveFailures = 0;
   let circuitOpenUntil = 0;
 
-  const stats = {
+  const createStats = () => ({
     attempts: 0,
     succeeded: 0,
     failed: 0,
     timeouts: 0,
     malformed: 0,
     rateLimited: 0,
+    httpFailures: 0,
+    networkFailures: 0,
     circuitOpenSkips: 0,
     disabledSkips: 0,
+    recoveries: 0,
     lastFailureAt: null,
     lastErrorKind: null,
-  };
+    lastRecoveryAt: null,
+  });
+
+  const stats = createStats();
 
   const circuitOpen = () => Date.now() < circuitOpenUntil;
 
@@ -71,6 +79,8 @@ function createAIClassifierService({
 
   function recordSuccess() {
     if (circuitOpenUntil) {
+      stats.recoveries += 1;
+      stats.lastRecoveryAt = new Date().toISOString();
       logger.info("AI circuit CLOSED (recovered)");
       circuitOpenUntil = 0;
     }
@@ -198,15 +208,19 @@ function createAIClassifierService({
       );
       return validated;
     } catch (err) {
-      const status = err.response?.status;
+      const status = err?.response?.status;
       if (status === 429) {
         stats.rateLimited += 1;
         recordFailure("rate_limited");
-      } else if (err.code === "ECONNABORTED" || err.code === "ETIMEDOUT") {
+      } else if (err?.code === "ECONNABORTED" || err?.code === "ETIMEDOUT") {
         stats.timeouts += 1;
         recordFailure("timeout");
+      } else if (status !== undefined && status !== null) {
+        stats.httpFailures += 1;
+        recordFailure(`http_${status}`);
       } else {
-        recordFailure(err.response?.status ? `http_${status}` : "network");
+        stats.networkFailures += 1;
+        recordFailure("network");
       }
       logger.warn(
         { kind: stats.lastErrorKind, status: status ?? null },
@@ -217,22 +231,77 @@ function createAIClassifierService({
   }
 
   function getStats() {
+    let enabled = false;
+    try {
+      enabled = Boolean(isEnabled());
+    } catch {
+      // Operational status must remain safe if a feature-flag getter fails.
+      enabled = false;
+    }
+
+    const open = circuitOpen();
     return {
       ...stats,
-      circuitOpen: circuitOpen(),
+      enabled,
+      provider: providerName,
+      model: model || null,
+      consecutiveFailures,
+      circuitOpen: open,
+      circuitState: open ? "open" : (circuitOpenUntil ? "half_open" : "closed"),
       cooldownRemainingMs: Math.max(0, circuitOpenUntil - Date.now()),
+      retryEligible: !open,
+      skipped: stats.circuitOpenSkips + stats.disabledSkips,
+    };
+  }
+
+  /** Safe aggregate/process-local status for operational telemetry. */
+  function getOperationalStatus() {
+    const snapshot = getStats();
+    return {
+      scope: "process",
+      enabled: snapshot.enabled,
+      provider: snapshot.provider,
+      model: snapshot.model,
+      circuitState: snapshot.circuitState,
+      circuitOpen: snapshot.circuitOpen,
+      consecutiveFailures: snapshot.consecutiveFailures,
+      cooldownRemainingMs: snapshot.cooldownRemainingMs,
+      retryEligible: snapshot.retryEligible,
+      recoveries: snapshot.recoveries,
+      attempts: snapshot.attempts,
+      successes: snapshot.succeeded,
+      failures: snapshot.failed,
+      skipped: snapshot.skipped,
+      skippedDisabled: snapshot.disabledSkips,
+      skippedCircuitOpen: snapshot.circuitOpenSkips,
+      failureCategories: {
+        timeout: snapshot.timeouts,
+        malformed: snapshot.malformed,
+        rateLimited: snapshot.rateLimited,
+        http: snapshot.httpFailures,
+        network: snapshot.networkFailures,
+      },
+      lastFailureAt: snapshot.lastFailureAt,
+      lastFailureKind: snapshot.lastErrorKind,
+      lastRecoveryAt: snapshot.lastRecoveryAt,
     };
   }
 
   return {
     classifyUncertain,
+    enabled: isEnabled,
     isEnabled,
     getStats,
+    getOperationalStatus,
     // test seam: reset bounded internal state between cases
     __reset: () => {
       consecutiveFailures = 0;
       circuitOpenUntil = 0;
-      Object.keys(stats).forEach((k) => delete stats[k]);
+      Object.assign(stats, createStats());
+    },
+    // Test seam: make the existing cooldown elapsed without sleeping 60s.
+    __forceCooldownElapsed: () => {
+      if (circuitOpenUntil) circuitOpenUntil = Date.now() - 1;
     },
   };
 }
@@ -245,9 +314,10 @@ const geminiAdapter = require("./geminiAdapter");
 
 const aiClassifier = createAIClassifierService({
   provider: geminiAdapter.callGemini,
+  providerName: "gemini",
   apiKeyGetter: () => process.env.GEMINI_API_KEY,
   isEnabled: () => Boolean(process.env.GEMINI_API_KEY),
-  model: process.env.AI_GEMINI_MODEL,
+  model: process.env.AI_GEMINI_MODEL || geminiAdapter.DEFAULT_MODEL,
 });
 
 module.exports = { createAIClassifierService, aiClassifier };

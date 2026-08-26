@@ -51,6 +51,28 @@ const loadUserPreferences = async (userId) => {
 /** AI budget per sync run — bounds cost even for huge uncertain batches. */
 const MAX_AI_PER_RUN = 10;
 
+/** Fresh, run-local AI accounting. No process-global counters live here. */
+const createAiStats = () => ({
+  eligible: 0,
+  attempted: 0,
+  succeeded: 0,
+  failed: 0,
+  skipped: 0,
+  budgetExhausted: 0,
+  skippedDisabled: 0,
+  skippedCircuitOpen: 0,
+});
+
+/** Keep the existing direct processEmail test seam working without a second
+ * production counter set; canonical run stats use the names above. */
+const incrementAiStat = (aiStats, field, legacyField = null) => {
+  if (!aiStats) return;
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(aiStats, key);
+  const key = hasOwn(field) ? field : (legacyField && hasOwn(legacyField) ? legacyField : null);
+  if (!key) return;
+  aiStats[key] = (Number.isFinite(aiStats[key]) ? aiStats[key] : 0) + 1;
+};
+
 const processEmail = async (
   gmail,
   messageId,
@@ -138,44 +160,59 @@ const processEmail = async (
   // Runs AFTER contextual refinement so it receives the final post-context
   // uncertainty decision. Only genuinely uncertain results reach it.
   if (decision.uncertain && !preserveCategory) {
-    if (aiStats) aiStats.candidates++;
+    incrementAiStat(aiStats, "eligible", "candidates");
 
-    if (!aiClassifier.enabled()) {
-      if (aiStats) aiStats.skippedDisabled++;
-    } else if (!aiContext || aiContext.remaining <= 0) {
-      if (aiStats) aiStats.skippedBudget++;
-    } else {
-      aiContext.remaining -= 1;
-      if (aiStats) aiStats.attempted++;
-      try {
-        const aiDecision = await aiClassifier.classifyUncertain({
-          fromDomain: extractSenderDomain(from),
-          subject,
-          snippet: msg.snippet || "",
-        });
+    try {
+      if (!aiClassifier.enabled()) {
+        incrementAiStat(aiStats, "skipped");
+        incrementAiStat(aiStats, "skippedDisabled");
+      } else if (!aiContext || aiContext.remaining <= 0) {
+        incrementAiStat(aiStats, "skipped");
+        incrementAiStat(aiStats, "budgetExhausted", "skippedBudget");
+      } else {
+        aiContext.remaining -= 1;
+        try {
+          const aiDecision = await aiClassifier.classifyUncertain({
+            fromDomain: extractSenderDomain(from),
+            subject,
+            snippet: msg.snippet || "",
+          });
 
-        if (aiDecision && !aiDecision.skipped) {
-          decision = aiDecision; // validated AI result replaces the weak one
-          if (aiStats) aiStats.succeeded++;
-        } else if (aiDecision && aiDecision.skipped) {
-          if (aiDecision.reason === "circuit_open") {
-            if (aiStats) aiStats.skippedCircuit++;
-          } else if (aiDecision.reason === "disabled") {
-            if (aiStats) aiStats.skippedDisabled++;
+          if (aiDecision && aiDecision.skipped) {
+            incrementAiStat(aiStats, "skipped");
+            if (aiDecision.reason === "circuit_open") {
+              incrementAiStat(aiStats, "skippedCircuitOpen", "skippedCircuit");
+            } else if (aiDecision.reason === "disabled") {
+              incrementAiStat(aiStats, "skippedDisabled");
+            }
+          } else {
+            incrementAiStat(aiStats, "attempted");
+            if (aiDecision) {
+              decision = aiDecision; // validated AI result replaces the weak one
+              incrementAiStat(aiStats, "succeeded");
+            } else {
+              // null or unexpected result (timeout, malformed, provider error)
+              incrementAiStat(aiStats, "failed", "fallbackKept");
+            }
           }
-        } else {
-          // null result (timeout, malformed, http error)
-          if (aiStats) aiStats.fallbackKept++;
+        } catch (err) {
+          // Absolute isolation: an unexpected AI-layer exception can never turn a
+          // successfully fetched email into an ingestion failure.
+          incrementAiStat(aiStats, "attempted");
+          incrementAiStat(aiStats, "failed", "fallbackKept");
+          logger.warn(
+            { userId, gmailMessageId: msg.id, err: err?.message || String(err) },
+            "AI fallback crashed — keeping deterministic classification"
+          );
         }
-      } catch (err) {
-        // Absolute isolation: an unexpected AI-layer exception can never turn a
-        // successfully fetched email into an ingestion failure.
-        if (aiStats) aiStats.fallbackKept++;
-        logger.warn(
-          { userId, gmailMessageId: msg.id, err: err.message },
-          "AI fallback crashed — keeping deterministic classification"
-        );
       }
+    } catch (err) {
+      // Feature-flag failures are contained just like provider failures.
+      incrementAiStat(aiStats, "failed", "fallbackKept");
+      logger.warn(
+        { userId, gmailMessageId: msg.id, err: err?.message || String(err) },
+        "AI availability check failed — keeping deterministic classification"
+      );
     }
   }
 
@@ -395,6 +432,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
   }
 
   logger.info(`[EmailSyncService] ${messages.length} messages to process`);
+  const aiStats = createAiStats();
 
   if (messages.length === 0) {
     logger.info(`[EmailSyncService] ✅ Nothing to sync`);
@@ -408,6 +446,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
       isEmpty: true,
       hasMore: !!nextPageToken,
       hasPendingPages,
+      aiStats,
       totalSynced: user.syncState.totalSynced || 0
     };
   }
@@ -430,15 +469,6 @@ async function runSync({ user, syncType, jobId, onProgress }) {
 
   // Phase 9: per-run AI budget shared across every message in this run
   const aiContext = { remaining: MAX_AI_PER_RUN };
-  const aiStats = {
-    candidates: 0,
-    attempted: 0,
-    succeeded: 0,
-    fallbackKept: 0,
-    skippedBudget: 0,
-    skippedDisabled: 0,
-    skippedCircuit: 0,
-  };
 
   // Phase 11: memoizing context loader — one query per unique domain/thread
   // for the entire batch (N+1 prevention), with aggregate run-level stats.

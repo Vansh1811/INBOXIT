@@ -12,6 +12,7 @@
     "test:aifallback": "node --test tests/aiFallback.test.js",
     "test:preference": "node --test tests/preferencePolicy.test.js",
     "test:context": "node --test tests/contextPolicy.test.js",
+    "test:phase13": "node --test tests/phase13.test.js",
     "dev": "nodemon index.js",
     "start": "node index.js"
   },
