@@ -2,7 +2,10 @@ const { Worker } = require("bullmq");
 const User = require("../models/User");
 const Email = require("../models/Email");
 const { getGmailClient } = require("../utils/gmailClient");
-const { resolveRollbackIds, restrictRollbackToFailed } = require("../utils/actionRollback");
+const {
+  restrictRollbackToFailedGmailIds,
+  resolveRollbackIds,
+} = require("../utils/actionRollback");
 const { actionQueue } = require("./actionQueue");
 const logger = require("../utils/logger").child({ component: "action-worker" });
 
@@ -23,22 +26,45 @@ const connection = {
  * Exported for verification tooling — this IS the production implementation.
  */
 async function reconcileLocalAfterFailure(data) {
+  if (!data) {
+    logger.warn("Rollback skipped — no payload");
+    return;
+  }
+  // Fail safe: without a userId the queries below would silently match
+  // nothing (Mongoose treats undefined as a null-constraint). Surface it.
+  if (!data.userId) {
+    logger.warn({ action: data.action }, "Rollback skipped — payload has no userId");
+    return;
+  }
+
   const { archiveIds, notDeletedIds } = resolveRollbackIds(data);
 
   if (notDeletedIds.length) {
-    await Email.updateMany(
+    const res = await Email.updateMany(
       { _id: { $in: notDeletedIds }, userId: data.userId },
       { isDeleted: false }
     );
-    logger.info({ count: notDeletedIds.length }, "Reverted local delete after final failure");
+    if (res.matchedCount < notDeletedIds.length) {
+      logger.warn(
+        { expected: notDeletedIds.length, matched: res.matchedCount },
+        "Delete rollback matched fewer docs than expected"
+      );
+    }
+    logger.info({ count: res.matchedCount }, "Reverted local delete after final failure");
   }
 
   if (archiveIds.length) {
-    await Email.updateMany(
+    const res = await Email.updateMany(
       { _id: { $in: archiveIds }, userId: data.userId },
       { $addToSet: { labels: "INBOX" } }
     );
-    logger.info({ count: archiveIds.length }, "Reverted local archive after final failure");
+    if (res.matchedCount < archiveIds.length) {
+      logger.warn(
+        { expected: archiveIds.length, matched: res.matchedCount },
+        "Archive rollback matched fewer docs than expected"
+      );
+    }
+    logger.info({ count: res.matchedCount }, "Reverted local archive after final failure");
   }
 }
 
@@ -116,18 +142,16 @@ const actionWorker = new Worker(
 
       // ── PARTIAL FAILURE HANDLING (O-C1) ────────────────────────────────
       // A bulk job where SOME chunks failed must never be reported as
-      // successful with those ids silently skipped. Attach a rollback
-      // payload restricted to the failed subset and throw:
+      // successful with those ids silently skipped. Resolve a rollback
+      // payload restricted to exactly the failed Gmail ids and throw:
       //   - non-final attempt → BullMQ retries the whole job (Gmail batch
       //     mutations are idempotent, so already-applied ids are no-ops)
       //   - final attempt → the catch below reconciles ONLY the failed ids
       if (failedGmailIds.length > 0) {
-        const docs = await Email.find(
-          { userId, gmailMessageId: { $in: failedGmailIds } },
-          { _id: 1 }
-        ).lean();
-        const failedMongoIds = docs.map((d) => d._id.toString());
-        const restricted = restrictRollbackToFailed(job.data, failedMongoIds);
+        const restricted = await restrictRollbackToFailedGmailIds(job.data, {
+          userId,
+          failedGmailIds,
+        });
 
         const err = new Error(
           `${action} partially failed for ${failedGmailIds.length}/${messageCount} message(s)`
