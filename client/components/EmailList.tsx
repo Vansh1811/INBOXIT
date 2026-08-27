@@ -6,6 +6,7 @@ import { useSocketContext } from "@/lib/contexts/SocketContext";
 import { useToast } from "@/lib/contexts/ToastContext";
 import { useSyncContext } from "@/lib/contexts/SyncContext";
 import { CAT } from "@/lib/utils/email";
+import { mutate as globalMutate } from "swr";
 import EmailDetail from "@/components/EmailDetail";
 import EmailListHeader from "@/components/EmailListHeader";
 import EmptyEmailState from "@/components/EmptyEmailState";
@@ -237,12 +238,14 @@ export default function EmailList({ folder }: EmailListProps) {
           
           api.post(`/api/emails/${id}/archive`).then(res => {
             const jobId = res.data?.jobId;
+            globalMutate("/api/emails/counts/unread");
             addToast("Archived", "info", {
               label: "Undo", countdown: 5,
               onClick: async () => {
                 if (!jobId) return;
                 try {
                   await api.post(`/api/emails/${id}/cancel-action`, { jobId });
+                  globalMutate("/api/emails/counts/unread");
                   removePendingAction(id);
                 } catch {}
               }
@@ -262,12 +265,14 @@ export default function EmailList({ folder }: EmailListProps) {
           
           api.delete(`/api/emails/${id}`).then(res => {
             const jobId = res.data?.jobId;
+            globalMutate("/api/emails/counts/unread");
             addToast("Deleted", "info", {
               label: "Undo", countdown: 5,
               onClick: async () => {
                 if (!jobId) return;
                 try {
                   await api.post(`/api/emails/${id}/cancel-action`, { jobId });
+                  globalMutate("/api/emails/counts/unread");
                   removePendingAction(id);
                 } catch {}
               }
@@ -298,6 +303,7 @@ export default function EmailList({ folder }: EmailListProps) {
     try {
       const res = await api.post(`/api/emails/bulk/archive`, { ids });
       const jobId = res.data?.jobId;
+      globalMutate("/api/emails/counts/unread");
       
       const toastId = Math.random().toString(36).slice(2, 9);
       addToast(`Archived ${ids.length} emails`, "info", {
@@ -307,6 +313,7 @@ export default function EmailList({ folder }: EmailListProps) {
           if (!jobId) return;
           try {
             await api.post(`/api/emails/bulk/cancel-action`, { jobId }); 
+            globalMutate("/api/emails/counts/unread"); 
             ids.forEach(id => removePendingAction(id));
             addToast("Bulk action undone. Emails restored.", "success");
           } catch (err: any) {
@@ -343,7 +350,10 @@ export default function EmailList({ folder }: EmailListProps) {
           <EmailDetail
             emailId={selectedEmailId}
             onClose={() => setSelectedEmailId(null)}
-            onEmailUpdated={() => mutate()}
+            onEmailUpdated={() => {
+              mutate();
+              globalMutate("/api/emails/counts/unread");
+            }}
           />
         </div>
       </div>
@@ -419,6 +429,7 @@ export default function EmailList({ folder }: EmailListProps) {
           try {
             const res = await api.post(`/api/emails/bulk/delete`, { ids });
             const jobId = res.data?.jobId; // Let's return jobId from backend
+            globalMutate("/api/emails/counts/unread");
             
             addToast(`Deleted ${ids.length} emails`, "info", {
               label: "Undo",
@@ -426,7 +437,8 @@ export default function EmailList({ folder }: EmailListProps) {
               onClick: async () => {
                 if (!jobId) return;
                 try {
-                  await api.post(`/api/emails/bulk/cancel-action`, { jobId });
+                  await api.post(`/api/emails/bulk/cancel-action`, { jobId }); 
+            globalMutate("/api/emails/counts/unread");
                   ids.forEach(id => removePendingAction(id));
                   addToast("Bulk action undone. Emails restored.", "success");
                 } catch (err: any) {

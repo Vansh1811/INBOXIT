@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import api from "@/lib/api";
 import DOMPurify from "dompurify";
 import { CAT, stripHtml } from "@/lib/utils/email";
+import { mutate as globalMutate } from "swr";
 import EmailDetailToolbar from "./EmailDetailToolbar";
 import EmailDetailHeader from "./EmailDetailHeader";
 import EmailDetailBody from "./EmailDetailBody";
