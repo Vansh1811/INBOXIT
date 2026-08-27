@@ -1,12 +1,13 @@
 const express = require("express");
 const router = express.Router();
-const { getEmails, getEmailById, updateEmail, deleteEmail, archiveEmail, cancelAction, bulkArchiveEmails, bulkDeleteEmails, bulkCancelAction } = require("../controllers/emailController");
+const { getEmails, getEmailById, updateEmail, deleteEmail, archiveEmail, cancelAction, bulkArchiveEmails, bulkDeleteEmails, bulkCancelAction, getCategoryCounts } = require("../controllers/emailController");
 const { protect } = require("../middleware/authMiddleware");
 const { refreshGmailToken } = require("../middleware/tokenRefreshMiddleware");
 
 router.use(protect);
 router.use(refreshGmailToken);
 
+router.get("/counts/unread", getCategoryCounts);
 router.get("/", getEmails);
 router.get("/:id", getEmailById);
 router.patch("/:id", updateEmail);

@@ -511,7 +511,7 @@ const bulkArchiveEmails = async (req, res) => {
     // …then propagate to Gmail asynchronously.
     const { enqueueActionJob } = require("../queues/actionQueue");
     const validGmailIds = emails.map(e => e.gmailMessageId);
-    
+
     const jobId = `bulk-${Date.now()}`;
     await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-archive", { restoreInboxIds });
 
@@ -548,7 +548,7 @@ const bulkDeleteEmails = async (req, res) => {
     // …then propagate to Gmail asynchronously (TRASH, same as single delete).
     const { enqueueActionJob } = require("../queues/actionQueue");
     const validGmailIds = emails.map(e => e.gmailMessageId);
-    
+
     const jobId = `bulk-${Date.now()}`;
     await enqueueActionJob(req.user.id, jobId, validGmailIds, "bulk-trash", { restoreNotDeletedIds });
 
@@ -561,6 +561,28 @@ const bulkDeleteEmails = async (req, res) => {
   }
 };
 
+const getCategoryCounts = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const counts = await Email.aggregate([
+      { $match: { userId, isDeleted: false, isRead: false } },
+      { $group: { _id: "$category", count: { $sum: 1 } } }
+    ]);
+
+    const result = {};
+    counts.forEach(c => {
+      if (c._id && isValidCategory(c._id) && c._id !== "uncategorized") {
+        result[c._id] = c.count;
+      }
+    });
+
+    return res.json(result);
+  } catch (err) {
+    req.log.error({ stack: err.stack }, "getCategoryCounts failed: " + err.message);
+    return res.status(500).json({ message: "Failed to fetch counts" });
+  }
+};
+
 module.exports = {
   getEmails,
   getEmailById,
@@ -570,5 +592,6 @@ module.exports = {
   cancelAction,
   bulkArchiveEmails,
   bulkDeleteEmails,
-  bulkCancelAction
+  bulkCancelAction,
+  getCategoryCounts
 };

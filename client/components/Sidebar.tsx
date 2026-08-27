@@ -1,14 +1,16 @@
 "use client";
-
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useSyncContext } from "@/lib/contexts/SyncContext";
 import { useSocketContext } from "@/lib/contexts/SocketContext";
+import { useFolderCounts } from "@/lib/hooks/useFolderCounts";
 import { cn } from "@/lib/utils/cn";
 import api from "@/lib/api";
 import {
   Inbox, Pin, Mail, LogOut,
   Briefcase, CreditCard, Pizza, Plane, Pill, Bell,
+  ShoppingBag, GraduationCap, Newspaper, User, Tag, Activity,
   Archive, Trash2
 } from "lucide-react";
 
@@ -39,6 +41,12 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
       { slug: "travel", name: "Travel", icon: Plane },
       { slug: "health", name: "Health", icon: Pill },
       { slug: "social", name: "Social", icon: Bell },
+      { slug: "shopping", name: "Shopping", icon: ShoppingBag },
+      { slug: "education", name: "Education", icon: GraduationCap },
+      { slug: "newsletters", name: "Newsletters", icon: Newspaper },
+      { slug: "personal", name: "Personal", icon: User },
+      { slug: "promotions", name: "Promotions", icon: Tag },
+      { slug: "updates", name: "Updates", icon: Activity },
     ],
   },
   {
@@ -57,6 +65,15 @@ export default function Sidebar({ mobile = false }: SidebarProps) {
   const router = useRouter();
   const { syncState } = useSyncContext();
   const { connected } = useSocketContext();
+  const { counts, mutate } = useFolderCounts();
+  const wasSyncing = useRef(syncState.isSyncing);
+
+  useEffect(() => {
+    if (wasSyncing.current && !syncState.isSyncing && connected) {
+      mutate();
+    }
+    wasSyncing.current = syncState.isSyncing;
+  }, [syncState.isSyncing, connected, mutate]);
 
   const currentFolder = pathname.replace("/dashboard/", "").replace("/dashboard", "") || "inbox";
 
@@ -119,16 +136,28 @@ export default function Sidebar({ mobile = false }: SidebarProps) {
                     <Link
                       href={`/dashboard/${folder.slug}`}
                       className={cn(
-                        "relative group flex items-center gap-3 px-3 py-2 rounded-md no-underline transition-colors duration-100 outline-none",
+                        "relative group flex items-center justify-between gap-3 px-3 py-2 rounded-md no-underline transition-colors duration-100 outline-none",
                         isActive
                           ? "text-[var(--accent)] bg-[var(--hover)] font-medium"
                           : "text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text-primary)] font-normal"
                       )}
                     >
-                      <Icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
-                      <span className="text-[14px] tracking-tight flex-1">
-                        {folder.name}
-                      </span>
+                      <div className="flex items-center gap-3 flex-1 overflow-hidden">
+                        <Icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+                        <span className="text-[14px] tracking-tight truncate">
+                          {folder.name}
+                        </span>
+                      </div>
+                      {section.title === "SMART" && counts[folder.slug] > 0 && (
+                        <span className={cn(
+                          "text-[11px] font-semibold px-2 py-0.5 rounded-full",
+                          isActive
+                            ? "bg-[var(--accent)]/10 text-[var(--accent)]"
+                            : "bg-[var(--hover)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]"
+                        )}>
+                          {counts[folder.slug]}
+                        </span>
+                      )}
                     </Link>
                   </li>
                 );
