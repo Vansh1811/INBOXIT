@@ -271,6 +271,7 @@ const fetchMessageChunk = async (gmail, pageToken = null, limit = CHUNK_SIZE) =>
 const fetchIncrementalMessageIds = async (gmail, startHistoryId) => {
   const changedIds = new Set();
   let pageToken;
+  let historyId = startHistoryId;
 
   do {
     const res = await gmail.users.history.list({
@@ -280,6 +281,10 @@ const fetchIncrementalMessageIds = async (gmail, startHistoryId) => {
       maxResults: 100,
       ...(pageToken && { pageToken }),
     });
+
+    if (res.data.historyId && !pageToken) {
+      historyId = res.data.historyId;
+    }
 
     for (const record of res.data.history || []) {
       (record.messagesAdded || []).forEach((m) => changedIds.add(m.message.id));
@@ -291,7 +296,10 @@ const fetchIncrementalMessageIds = async (gmail, startHistoryId) => {
     pageToken = res.data.nextPageToken;
   } while (pageToken);
 
-  return [...changedIds].map((id) => ({ id }));
+  return {
+    messages: [...changedIds].map((id) => ({ id })),
+    historyId
+  };
 };
 
 const getExistingMessageIds = async (userId, gmailIds) => {
@@ -400,6 +408,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
   let messages = [];
   let nextPageToken = user.syncState?.nextPageToken || null;
   let didFallback = false;
+  let incrementalHistoryId = null;
 
   const hasPendingPages = !!user.syncState?.nextPageToken;
 
@@ -408,7 +417,9 @@ async function runSync({ user, syncType, jobId, onProgress }) {
     let incrementalMessages = [];
 
     try {
-      incrementalMessages = await fetchIncrementalMessageIds(gmail, user.lastHistoryId);
+      const incResult = await fetchIncrementalMessageIds(gmail, user.lastHistoryId);
+      incrementalMessages = incResult.messages;
+      incrementalHistoryId = incResult.historyId;
       logger.info(`[EmailSyncService] Incremental returned ${incrementalMessages.length} message(s)`);
     } catch (incErr) {
       const errMsg = incErr.response?.data?.error?.message || incErr.message;
@@ -436,7 +447,11 @@ async function runSync({ user, syncType, jobId, onProgress }) {
 
   if (messages.length === 0) {
     logger.info(`[EmailSyncService] ✅ Nothing to sync`);
-    user.lastHistoryId = await getCurrentHistoryId(gmail);
+    if (syncType === "incremental" && !didFallback && incrementalHistoryId) {
+      user.lastHistoryId = incrementalHistoryId;
+    } else if (!hasPendingPages) {
+      user.lastHistoryId = await getCurrentHistoryId(gmail);
+    }
     user.syncState.erroredRuns = 0; // an empty poll is a successful poll
     await persistRunResults(userId, jobId, {
       lastHistoryId: user.lastHistoryId,
@@ -583,7 +598,9 @@ async function runSync({ user, syncType, jobId, onProgress }) {
 
   if (advance) {
     user.syncState.nextPageToken = nextPageToken;
-    if (syncType === "incremental" || !hasPendingPages) {
+    if (syncType === "incremental" && !didFallback && incrementalHistoryId) {
+      user.lastHistoryId = incrementalHistoryId;
+    } else if (!hasPendingPages) {
       user.lastHistoryId = await getCurrentHistoryId(gmail);
     }
   }
@@ -618,3 +635,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
 
 // Exported for verification tooling — real ingestion implementation.
 module.exports = { runSync, loadUserPreferences, processEmail };
+
+if (process.env.NODE_ENV === "test") {
+  module.exports.fetchIncrementalMessageIds = fetchIncrementalMessageIds;
+}

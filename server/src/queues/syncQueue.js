@@ -32,13 +32,14 @@ async function queueClient() {
 }
 
 const enqueueSyncJob = async (userId, type = "incremental") => {
+  const attempts = type === "full" ? 10 : 2;
   await syncQueue.add(
     "sync",
     { userId, type },
     {
       removeOnComplete: true,
       removeOnFail: { count: 3 },
-      attempts: 2,
+      attempts,
       backoff: { type: "fixed", delay: 5000 },
     }
   );

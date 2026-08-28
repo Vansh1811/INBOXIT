@@ -31,9 +31,7 @@ const safeEmit = (userId, event, payload) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // WORKER
 // ─────────────────────────────────────────────────────────────────────────────
-const worker = new Worker(
-  "gmail-sync",
-  async (job) => {
+const processJob = async (job) => {
     const startTime = Date.now();
     const { userId, type } = job.data;
     logger.info(`[Worker] 🟡 Job — userId=${userId}, type=${type}, attempt=${job.attemptsMade + 1}`);
@@ -64,6 +62,9 @@ const worker = new Worker(
       if (!existingUser) throw new Error("User not found");
       
       logger.info(`[Worker] ⚠️  Already syncing (started ${existingUser.syncState?.syncStartedAt}), skipping`);
+      if (type === "full") {
+        throw new Error("Lock collision during full sync continuation — retrying");
+      }
       return { skipped: true };
     }
 
@@ -247,7 +248,11 @@ const worker = new Worker(
       logger.info(`[Worker] 🟢 Sync complete! Ensuring live tracking...`);
       await enqueuePeriodicSync(userId);
     }
-  },
+};
+
+const worker = new Worker(
+  "gmail-sync",
+  processJob,
   {
     connection:   bullConnection,
     concurrency:  4,             // parallel users; same-user overlap blocked by isSyncing lock
@@ -297,4 +302,4 @@ worker.on("failed", (job, err) =>
 worker.on("completed", (job) => logger.info(`[Worker] ✅ Done userId=${job?.data?.userId}`));
 worker.on("error", (err) => logger.error(`[Worker] ❌ Worker error:`, err.message));
 
-module.exports = { worker, setEmitter };
+module.exports = { worker, setEmitter, processJob };
