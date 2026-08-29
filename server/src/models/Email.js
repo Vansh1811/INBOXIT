@@ -6,8 +6,7 @@ const emailSchema = new mongoose.Schema(
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
-      index: true
+      required: true
     },
 
     gmailMessageId: {
@@ -27,7 +26,7 @@ const emailSchema = new mongoose.Schema(
     bodyHtml: String,
     bodyText: String,
 
-    receivedAt: { type: Date, index: true },
+    receivedAt: { type: Date },
 
     // CANONICAL single category (see services/categories.js).
     // Replaces the former multi-value `categories` array.

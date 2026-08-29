@@ -464,6 +464,10 @@ const bulkCancelAction = async (req, res) => {
       return res.status(409).json({ message: "Too late — the action has already completed." });
     }
 
+    if (job.data?.userId?.toString() !== req.user.id.toString()) {
+      return res.status(403).json({ message: "Forbidden: You do not own this action." });
+    }
+
     const state = await job.getState();
     if (state !== 'delayed' && state !== 'waiting') {
       return res.status(409).json({ message: "Too late — the action has already completed." });
@@ -504,7 +508,7 @@ const bulkArchiveEmails = async (req, res) => {
 
     // IMMEDIATE local persistence…
     await Email.updateMany(
-      { _id: { $in: emails.map(e => e._id) } },
+      { _id: { $in: emails.map(e => e._id) }, userId: req.user.id },
       { $pull: { labels: "INBOX" } }
     );
 
@@ -541,7 +545,7 @@ const bulkDeleteEmails = async (req, res) => {
 
     // IMMEDIATE local persistence…
     await Email.updateMany(
-      { _id: { $in: emails.map(e => e._id) } },
+      { _id: { $in: emails.map(e => e._id) }, userId: req.user.id },
       { isDeleted: true }
     );
 

@@ -104,7 +104,7 @@ describe("Phase 12: AI Cost Controls", () => {
     };
     const aiContext = { remaining: 10 };
 
-    await processEmail(gmail, "msg1", "user1", {}, new Set(), aiContext, null, aiStats);
+    await processEmail(gmail, "msg1", "user1", {}, new Map(), aiContext, null, aiStats);
 
     assert.strictEqual(aiStats.candidates, 1);
     assert.strictEqual(aiStats.attempted, 1);
@@ -127,7 +127,7 @@ describe("Phase 12: AI Cost Controls", () => {
     };
     const aiContext = { remaining: 0 }; // Budget exhausted
 
-    await processEmail(gmail, "msg1", "user1", {}, new Set(), aiContext, null, aiStats);
+    await processEmail(gmail, "msg1", "user1", {}, new Map(), aiContext, null, aiStats);
 
     assert.strictEqual(aiStats.candidates, 1);
     assert.strictEqual(aiStats.attempted, 0);

@@ -78,7 +78,7 @@ const processEmail = async (
   messageId,
   userId,
   userPrefs = {},
-  overriddenIds = new Set(),
+  existingDocsMap = new Map(),
   aiContext = null,
   contextLoader = null,
   aiStats = null
@@ -95,27 +95,31 @@ const processEmail = async (
 
   const gmailLabels = msg.labelIds || [];
 
+  const existingDoc = existingDocsMap.get(msg.id);
+  const preserveCategory = !!existingDoc;
+
   // ── Classification (isolated from sync reliability — Phase 8) ────────────
   // A classifier failure must never drop the message or poison the sync run:
   // we ingest with an explicit low-confidence fallback and mark it uncertain
   // so the future AI fallback layer can revisit it.
   let decision;
-  try {
-    decision = classifyDetailed(from, subject, userPrefs, gmailLabels);
-    if (!decision || !isValidCategory(decision.category)) {
-      throw new Error(`classifier returned invalid category: ${decision && decision.category}`);
+  if (!preserveCategory) {
+    try {
+      decision = classifyDetailed(from, subject, userPrefs, gmailLabels);
+      if (!decision || !isValidCategory(decision.category)) {
+        throw new Error(`classifier returned invalid category: ${decision && decision.category}`);
+      }
+    } catch (err) {
+      logger.warn(
+        { userId, gmailMessageId: msg.id, err: err.message },
+        "Classifier failed — using explicit fallback classification"
+      );
+      decision = fallbackClassification(err.message);
     }
-  } catch (err) {
-    logger.warn(
-      { userId, gmailMessageId: msg.id, err: err.message },
-      "Classifier failed — using explicit fallback classification"
-    );
-    decision = fallbackClassification(err.message);
   }
 
   // Never clobber a category the user set manually — user intent also means
-  // spending AI budget here would be waste.
-  const preserveCategory = overriddenIds.has(msg.id);
+  // spending AI budget here.
 
   // ── Phase 11: bounded contextual refinement ──────────────────────────────
   // Applies ONLY to weak/uncertain deterministic decisions (confidence at or
@@ -126,7 +130,7 @@ const processEmail = async (
   if (
     contextLoader &&
     !preserveCategory &&
-    decision.confidence <= CONTEXT_ELIGIBLE_MAX_CONFIDENCE
+    decision?.confidence <= CONTEXT_ELIGIBLE_MAX_CONFIDENCE
   ) {
     try {
       const { domainEntries, threadEntries } = await contextLoader.resolve({
@@ -159,7 +163,7 @@ const processEmail = async (
   // ── Phase 9: AI fallback at the explicit uncertainty boundary ────────────
   // Runs AFTER contextual refinement so it receives the final post-context
   // uncertainty decision. Only genuinely uncertain results reach it.
-  if (decision.uncertain && !preserveCategory) {
+  if (!preserveCategory && decision?.uncertain) {
     incrementAiStat(aiStats, "eligible", "candidates");
 
     try {
@@ -216,8 +220,6 @@ const processEmail = async (
     }
   }
 
-  const classificationSource = preserveCategory ? "user" : decision.source;
-
   return {
     userId,
     gmailMessageId: msg.id,
@@ -231,13 +233,13 @@ const processEmail = async (
     bodyText,
     receivedAt: new Date(parseInt(msg.internalDate)),
     ...(preserveCategory
-      ? { classificationSource }
-      : { category: decision.category, classificationSource }),
+      ? {}
+      : { category: decision.category, classificationSource: decision.source }),
     isRead:    !gmailLabels.includes("UNREAD"),
     isStarred:  gmailLabels.includes("STARRED") || false,
     isDeleted:  gmailLabels.includes("TRASH"),
     labels:     gmailLabels,
-    ...(contextMeta ? { contextMeta } : {}),
+    ...(contextMeta && !preserveCategory ? { contextMeta } : {}),
   };
 };
 
@@ -310,14 +312,16 @@ const getExistingMessageIds = async (userId, gmailIds) => {
   return new Set(existing.map((e) => e.gmailMessageId));
 };
 
-/** Gmail ids whose category the user has manually overridden. */
-const getOverriddenMessageIds = async (userId, gmailIds) => {
-  if (!gmailIds.length) return new Set();
+/** Existing emails map for incremental sync preservation. */
+const getExistingMessagesMap = async (userId, gmailIds) => {
+  if (!gmailIds.length) return new Map();
   const docs = await Email.find(
-    { userId, gmailMessageId: { $in: gmailIds }, userOverride: true },
+    { userId, gmailMessageId: { $in: gmailIds } },
     { gmailMessageId: 1 }
   ).lean();
-  return new Set(docs.map((e) => e.gmailMessageId));
+  const map = new Map();
+  for (const d of docs) map.set(d.gmailMessageId, d);
+  return map;
 };
 
 const refreshTokenIfNeeded = async (user) => {
@@ -477,9 +481,9 @@ async function runSync({ user, syncType, jobId, onProgress }) {
   logger.info(`[EmailSyncService] Skipping ${skipped} already-synced, processing ${total} new`);
 
   // Learned preferences + user-protected categories are loaded ONCE per run
-  const [userPrefs, overriddenIds] = await Promise.all([
+  const [userPrefs, existingDocsMap] = await Promise.all([
     loadUserPreferences(userId),
-    getOverriddenMessageIds(userId, allGmailIds),
+    getExistingMessagesMap(userId, allGmailIds),
   ]);
 
   // Phase 9: per-run AI budget shared across every message in this run
@@ -504,7 +508,7 @@ async function runSync({ user, syncType, jobId, onProgress }) {
       batch.map(async ({ id }) => {
         try {
           return await processEmail(
-            gmail, id, userId, userPrefs, overriddenIds, aiContext, contextLoader, aiStats
+            gmail, id, userId, userPrefs, existingDocsMap, aiContext, contextLoader, aiStats
           );
         } catch (err) {
           const classification = classifyGmailError(err);

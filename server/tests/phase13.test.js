@@ -313,7 +313,7 @@ describe("Phase 13: per-sync accounting and isolation", () => {
       "message-1",
       "user-1",
       {},
-      new Set(),
+      new Map(),
       context,
       null,
       stats
@@ -373,7 +373,7 @@ describe("Phase 13: per-sync accounting and isolation", () => {
         `message-${item.name}`,
         "user-1",
         {},
-        new Set(),
+        new Map(),
         context,
         null,
         stats
@@ -398,7 +398,7 @@ describe("Phase 13: per-sync accounting and isolation", () => {
       "message-1",
       "user-1",
       {},
-      new Set(),
+      new Map(),
       { remaining: 10 },
       null,
       stats
